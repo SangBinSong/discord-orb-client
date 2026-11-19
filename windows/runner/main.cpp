@@ -34,6 +34,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {
+    if ((msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) &&
+        msg.wParam == VK_ESCAPE && window.IsExpanded() &&
+        window.GetHandle() != nullptr && msg.hwnd != window.GetHandle() &&
+        ::IsChild(window.GetHandle(), msg.hwnd)) {
+      ::SendMessage(window.GetHandle(), msg.message, msg.wParam, msg.lParam);
+      continue;
+    }
     ::TranslateMessage(&msg);
     ::DispatchMessage(&msg);
   }

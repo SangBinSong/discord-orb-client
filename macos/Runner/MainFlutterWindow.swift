@@ -3,11 +3,14 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private static let channelName = "discord_orb/window"
-  private static let collapsedOrbSize = NSSize(width: 64, height: 64)
+  private static let collapsedOrbSize = NSSize(width: 80, height: 80)
+  private static let mainWindowSize = NSSize(width: 480, height: 680)
   private static let defaultMargin: CGFloat = 24
   private static let escapeKeyCode: UInt16 = 53
 
+  private weak var flutterViewController: FlutterViewController?
   private var windowChannel: FlutterMethodChannel?
+  private var isOverlayMode = false
   private var isExpanded = false
   private var collapsedOrigin: NSPoint?
   private var keyMonitor: Any?
@@ -20,15 +23,10 @@ class MainFlutterWindow: NSWindow {
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
-    flutterViewController.backgroundColor = .clear
-    flutterViewController.view.wantsLayer = true
-    flutterViewController.view.layer?.backgroundColor = NSColor.clear.cgColor
-
-    let windowFrame = self.frame
+    self.flutterViewController = flutterViewController
     self.contentViewController = flutterViewController
-    self.setFrame(windowFrame, display: true)
 
-    configureOverlayWindow()
+    configureMainWindow(centerWindow: true)
     registerWindowChannel(messenger: flutterViewController.engine.binaryMessenger)
     installEventMonitorsAndObservers()
 
@@ -61,13 +59,38 @@ class MainFlutterWindow: NSWindow {
     windowChannel = nil
   }
 
+  private func configureMainWindow(centerWindow: Bool) {
+    isOverlayMode = false
+    styleMask = [.titled, .closable, .miniaturizable, .resizable]
+    title = "Discord Orb"
+    isOpaque = true
+    backgroundColor = .windowBackgroundColor
+    hasShadow = true
+    level = .normal
+    collectionBehavior = []
+    flutterViewController?.backgroundColor = .windowBackgroundColor
+    contentView?.wantsLayer = true
+    contentView?.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+    if centerWindow {
+      let targetFrame = centeredFrameInVisibleScreen(size: Self.mainWindowSize)
+      setFrame(targetFrame, display: true, animate: false)
+    }
+    invalidateShadow()
+  }
+
   private func configureOverlayWindow() {
+    isOverlayMode = true
     styleMask = [.borderless]
     isOpaque = false
     backgroundColor = .clear
     hasShadow = false
     level = .floating
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+    flutterViewController?.backgroundColor = .clear
+    contentView?.wantsLayer = true
+    contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+    invalidateShadow()
   }
 
   private func registerWindowChannel(messenger: FlutterBinaryMessenger) {
@@ -84,7 +107,7 @@ class MainFlutterWindow: NSWindow {
   private func installEventMonitorsAndObservers() {
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
       guard let self = self else { return event }
-      if event.keyCode == Self.escapeKeyCode && self.isExpanded {
+      if event.keyCode == Self.escapeKeyCode && self.isExpanded && self.isOverlayMode {
         self.notifyPanelDismissRequested()
         return nil
       }
@@ -98,7 +121,7 @@ class MainFlutterWindow: NSWindow {
         object: self,
         queue: .main
       ) { [weak self] _ in
-        guard let self = self, self.isExpanded else { return }
+        guard let self = self, self.isExpanded, self.isOverlayMode else { return }
         self.notifyPanelDismissRequested()
       }
     )
@@ -108,7 +131,7 @@ class MainFlutterWindow: NSWindow {
         object: NSApp,
         queue: .main
       ) { [weak self] _ in
-        guard let self = self, self.isExpanded else { return }
+        guard let self = self, self.isExpanded, self.isOverlayMode else { return }
         self.notifyPanelDismissRequested()
       }
     )
@@ -160,6 +183,26 @@ class MainFlutterWindow: NSWindow {
       }
       expandPanelWindow(size: NSSize(width: width, height: height))
       result(nil)
+    case "moveOrb":
+      guard let args = call.arguments as? [String: Any],
+            let dx = (args["dx"] as? NSNumber)?.doubleValue,
+            let dy = (args["dy"] as? NSNumber)?.doubleValue,
+            dx.isFinite,
+            dy.isFinite else {
+        result(
+          FlutterError(
+            code: "invalid_arguments",
+            message: "moveOrb requires finite numeric dx and dy",
+            details: nil
+          )
+        )
+        return
+      }
+      moveOrbWindow(dx: CGFloat(dx), dy: CGFloat(dy))
+      result(nil)
+    case "showMainWindow":
+      showMainWindow()
+      result(nil)
     case "hideOrb":
       hideOrbWindow()
       result(nil)
@@ -168,7 +211,19 @@ class MainFlutterWindow: NSWindow {
     }
   }
 
+  private func showMainWindow() {
+    isExpanded = false
+    let shouldCenter =
+      isOverlayMode ||
+      frame.width < Self.mainWindowSize.width ||
+      frame.height < Self.mainWindowSize.height
+    configureMainWindow(centerWindow: shouldCenter)
+    NSApp.activate(ignoringOtherApps: true)
+    makeKeyAndOrderFront(nil)
+  }
+
   private func showCollapsedOrbWindow() {
+    configureOverlayWindow()
     let targetSize = Self.collapsedOrbSize
     let origin = collapsedOrigin ?? defaultCollapsedOrigin(for: targetSize)
     let targetFrame = clampFrameToVisibleScreen(NSRect(origin: origin, size: targetSize))
@@ -176,10 +231,12 @@ class MainFlutterWindow: NSWindow {
     collapsedOrigin = targetFrame.origin
     isExpanded = false
     setFrame(targetFrame, display: true, animate: false)
+    invalidateShadow()
     orderFrontRegardless()
   }
 
   private func expandPanelWindow(size: NSSize) {
+    configureOverlayWindow()
     if !isExpanded {
       if frame.size == Self.collapsedOrbSize {
         collapsedOrigin = frame.origin
@@ -191,7 +248,7 @@ class MainFlutterWindow: NSWindow {
     let anchorOrigin = collapsedOrigin ?? defaultCollapsedOrigin(for: Self.collapsedOrbSize)
     let desiredFrame = NSRect(
       x: anchorOrigin.x + Self.collapsedOrbSize.width - size.width,
-      y: anchorOrigin.y,
+      y: anchorOrigin.y + Self.collapsedOrbSize.height - size.height,
       width: size.width,
       height: size.height
     )
@@ -199,8 +256,23 @@ class MainFlutterWindow: NSWindow {
 
     isExpanded = true
     setFrame(clampedFrame, display: true, animate: false)
+    invalidateShadow()
     NSApp.activate(ignoringOtherApps: true)
     makeKeyAndOrderFront(nil)
+  }
+
+  private func moveOrbWindow(dx: CGFloat, dy: CGFloat) {
+    let desiredFrame = NSRect(
+      x: frame.origin.x + dx,
+      y: frame.origin.y - dy,
+      width: frame.width,
+      height: frame.height
+    )
+    let clampedFrame = clampFrameToVisibleScreen(desiredFrame)
+    setFrame(clampedFrame, display: true, animate: false)
+    if !isExpanded {
+      collapsedOrigin = clampedFrame.origin
+    }
   }
 
   private func hideOrbWindow() {
@@ -212,13 +284,26 @@ class MainFlutterWindow: NSWindow {
     return (screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
   }
 
+  private func centeredFrameInVisibleScreen(size: NSSize) -> NSRect {
+    guard let visible = activeVisibleFrame() else {
+      return NSRect(origin: NSPoint(x: 120, y: 120), size: size)
+    }
+    let width = min(size.width, visible.width)
+    let height = min(size.height, visible.height)
+    let origin = NSPoint(
+      x: visible.midX - (width / 2),
+      y: visible.midY - (height / 2)
+    )
+    return clampFrameToVisibleScreen(NSRect(origin: origin, size: NSSize(width: width, height: height)))
+  }
+
   private func defaultCollapsedOrigin(for size: NSSize) -> NSPoint {
     guard let visible = activeVisibleFrame() else {
       return NSPoint(x: Self.defaultMargin, y: Self.defaultMargin)
     }
     return NSPoint(
       x: visible.maxX - size.width - Self.defaultMargin,
-      y: visible.minY + Self.defaultMargin
+      y: visible.maxY - size.height - Self.defaultMargin
     )
   }
 

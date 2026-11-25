@@ -228,6 +228,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
         _selectedChannel = null;
         _stage = _AppStage.setup;
       });
+      await _showMainWindowSafely();
       return;
     }
 
@@ -236,6 +237,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
         _selectedChannel = null;
         _stage = _AppStage.signIn;
       });
+      await _showMainWindowSafely();
       return;
     }
 
@@ -255,6 +257,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
       _selectedChannel = null;
       _stage = _AppStage.channelSelect;
     });
+    await _showMainWindowSafely();
   }
 
   Future<EligibleChannel?> _restoreSelectedChannel() async {
@@ -288,9 +291,9 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
     }
   }
 
-  Future<void> _hideOrbSafely() async {
+  Future<void> _showMainWindowSafely() async {
     try {
-      await _windowController.hideOrb();
+      await _windowController.showMainWindow();
     } catch (_) {
       // Ignore missing host plugin in widget tests.
     }
@@ -328,7 +331,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
     await _authRepository.clearLocalStateForBackendChange();
     await _identityStore.deleteSelectedChannel();
     _previewRepository.clearMemory();
-    await _hideOrbSafely();
+    await _showMainWindowSafely();
     if (!mounted) return;
     setState(() {
       _selectedChannel = null;
@@ -340,7 +343,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
     _orbShellController.closeAndClear();
     _previewRepository.clearMemory();
     await _identityStore.deleteSelectedChannel();
-    await _hideOrbSafely();
+    await _showMainWindowSafely();
     if (!mounted) return;
     setState(() {
       _selectedChannel = null;
@@ -351,7 +354,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
   Future<void> _handleReselectChannel() async {
     _orbShellController.closeAndClear();
     _previewRepository.clearMemory();
-    await _hideOrbSafely();
+    await _showMainWindowSafely();
     if (!mounted) return;
     setState(() {
       _stage = _AppStage.channelSelect;
@@ -362,7 +365,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
     _orbShellController.closeAndClear();
     _previewRepository.clearMemory();
     await _identityStore.deleteSelectedChannel();
-    await _hideOrbSafely();
+    await _showMainWindowSafely();
     if (!mounted) return;
     setState(() {
       _selectedChannel = null;
@@ -374,7 +377,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
     _orbShellController.closeAndClear();
     _previewRepository.clearMemory();
     await _identityStore.deleteSelectedChannel();
-    await _hideOrbSafely();
+    await _showMainWindowSafely();
     if (!mounted) return;
     setState(() {
       _selectedChannel = null;
@@ -414,6 +417,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
 
     return MaterialApp(
       title: 'Discord Orb',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF5865F2),
@@ -452,70 +456,83 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
             case _AppStage.orb:
               final channel = _selectedChannel;
               return Scaffold(
-                body: Stack(
-                  children: <Widget>[
-                    SafeArea(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Align(
-                          alignment: Alignment.bottomLeft,
-                          child: Card(
+                backgroundColor: Colors.transparent,
+                body: LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                    final showControlsBar = constraints.maxWidth >= 200 &&
+                        constraints.maxHeight >= 200;
+                    return Stack(
+                      children: <Widget>[
+                        if (showControlsBar)
+                          SafeArea(
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: <Widget>[
-                                  const Icon(Icons.tag, size: 16),
-                                  const SizedBox(width: 6),
-                                  Flexible(
-                                    child: Text(
-                                      channel == null
-                                          ? 'No channel selected'
-                                          : '${channel.guildName} · #${channel.channelName}',
-                                      overflow: TextOverflow.ellipsis,
+                              padding: const EdgeInsets.all(16),
+                              child: Align(
+                                alignment: Alignment.bottomLeft,
+                                child: Card(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 8,
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: <Widget>[
+                                        const Icon(Icons.tag, size: 16),
+                                        const SizedBox(width: 6),
+                                        Flexible(
+                                          child: Text(
+                                            channel == null
+                                                ? 'No channel selected'
+                                                : '${channel.guildName} · #${channel.channelName}',
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        IconButton(
+                                          key: DiscordOrbApp
+                                              .changeChannelButtonKey,
+                                          tooltip: 'Change channel',
+                                          icon: const Icon(Icons.swap_horiz),
+                                          onPressed: () => unawaited(
+                                            _handleReselectChannel(),
+                                          ),
+                                        ),
+                                        IconButton(
+                                          key: DiscordOrbApp
+                                              .openSettingsButtonKey,
+                                          tooltip: 'Session settings',
+                                          icon: const Icon(
+                                            Icons.settings_outlined,
+                                          ),
+                                          onPressed: () =>
+                                              _openSettingsSheet(homeContext),
+                                        ),
+                                      ],
                                     ),
                                   ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    key: DiscordOrbApp.changeChannelButtonKey,
-                                    tooltip: 'Change channel',
-                                    icon: const Icon(Icons.swap_horiz),
-                                    onPressed: () =>
-                                        unawaited(_handleReselectChannel()),
-                                  ),
-                                  IconButton(
-                                    key: DiscordOrbApp.openSettingsButtonKey,
-                                    tooltip: 'Session settings',
-                                    icon: const Icon(Icons.settings_outlined),
-                                    onPressed: () =>
-                                        _openSettingsSheet(homeContext),
-                                  ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
+                        Positioned.fill(
+                          child: OrbShell(
+                            previewRepository: _previewRepository,
+                            windowController: _windowController,
+                            controller: _orbShellController,
+                            guildId: channel?.guildId,
+                            channelId: channel?.channelId,
+                            channelName: channel?.channelName,
+                            guildName: channel?.guildName,
+                            onReauthenticate: () =>
+                                unawaited(_handleReauthenticate()),
+                            onReselectChannel: () =>
+                                unawaited(_handleReselectChannel()),
+                          ),
                         ),
-                      ),
-                    ),
-                    Positioned.fill(
-                      child: OrbShell(
-                        previewRepository: _previewRepository,
-                        windowController: _windowController,
-                        controller: _orbShellController,
-                        guildId: channel?.guildId,
-                        channelId: channel?.channelId,
-                        channelName: channel?.channelName,
-                        guildName: channel?.guildName,
-                        onReauthenticate: () =>
-                            unawaited(_handleReauthenticate()),
-                        onReselectChannel: () =>
-                            unawaited(_handleReselectChannel()),
-                      ),
-                    ),
-                  ],
+                      ],
+                    );
+                  },
                 ),
               );
           }

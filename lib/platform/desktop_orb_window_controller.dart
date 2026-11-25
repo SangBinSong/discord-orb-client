@@ -56,6 +56,19 @@ class DesktopOrbWindowController implements OrbWindowController {
   }
 
   @override
+  Future<void> moveOrbBy(Offset delta) async {
+    await _channel.invokeMethod<void>('moveOrb', <String, dynamic>{
+      'dx': delta.dx,
+      'dy': delta.dy,
+    });
+  }
+
+  @override
+  Future<void> showMainWindow() async {
+    await _channel.invokeMethod<void>('showMainWindow');
+  }
+
+  @override
   Stream<void> get onLockOrSleep => _lockOrSleepController.stream;
 
   @override

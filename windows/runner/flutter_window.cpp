@@ -14,7 +14,9 @@
 namespace {
 
 constexpr char kWindowChannelName[] = "discord_orb/window";
-constexpr double kCollapsedOrbSizeLogical = 64.0;
+constexpr double kCollapsedOrbSizeLogical = 80.0;
+constexpr double kMainWindowWidthLogical = 480.0;
+constexpr double kMainWindowHeightLogical = 680.0;
 constexpr double kDefaultMarginLogical = 24.0;
 
 std::optional<double> TryGetDoubleArg(const flutter::EncodableMap& args,
@@ -54,7 +56,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
 
-  ConfigureOverlayWindow(hwnd);
+  ConfigureMainWindow(hwnd);
 
   RECT frame = GetClientArea();
 
@@ -79,9 +81,13 @@ bool FlutterWindow::OnCreate() {
   flutter_controller_->engine()->SetNextFrameCallback([this]() {
     HWND window = this->GetHandle();
     if (window) {
-      ::ShowWindow(window, SW_SHOWNOACTIVATE);
-      ::SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+      if (this->is_overlay_mode_) {
+        ::ShowWindow(window, SW_SHOWNOACTIVATE);
+        ::SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+      } else {
+        ::ShowWindow(window, SW_SHOW);
+      }
     }
   });
 
@@ -108,7 +114,23 @@ void FlutterWindow::OnDestroy() {
   Win32Window::OnDestroy();
 }
 
+void FlutterWindow::ConfigureMainWindow(HWND hwnd) {
+  is_overlay_mode_ = false;
+  LONG_PTR style = ::GetWindowLongPtr(hwnd, GWL_STYLE);
+  style &= ~static_cast<LONG_PTR>(WS_POPUP);
+  style |= WS_OVERLAPPEDWINDOW;
+  ::SetWindowLongPtr(hwnd, GWL_STYLE, style);
+
+  LONG_PTR ex_style = ::GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+  ex_style &= ~static_cast<LONG_PTR>(WS_EX_TOPMOST | WS_EX_TOOLWINDOW);
+  ::SetWindowLongPtr(hwnd, GWL_EXSTYLE, ex_style);
+
+  ::SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
 void FlutterWindow::ConfigureOverlayWindow(HWND hwnd) {
+  is_overlay_mode_ = true;
   LONG_PTR style = ::GetWindowLongPtr(hwnd, GWL_STYLE);
   style &= ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW);
   style |= WS_POPUP;
@@ -176,6 +198,33 @@ void FlutterWindow::HandleWindowMethodCall(
     result->Success();
     return;
   }
+  if (method == "moveOrb") {
+    const auto* args =
+        call.arguments()
+            ? std::get_if<flutter::EncodableMap>(call.arguments())
+            : nullptr;
+    if (!args) {
+      result->Error("invalid_arguments",
+                    "moveOrb requires a map with dx and dy");
+      return;
+    }
+    std::optional<double> dx = TryGetDoubleArg(*args, "dx");
+    std::optional<double> dy = TryGetDoubleArg(*args, "dy");
+    if (!dx.has_value() || !dy.has_value() || !std::isfinite(*dx) ||
+        !std::isfinite(*dy)) {
+      result->Error("invalid_arguments",
+                    "moveOrb requires finite numeric dx and dy");
+      return;
+    }
+    MoveOrb(*dx, *dy);
+    result->Success();
+    return;
+  }
+  if (method == "showMainWindow") {
+    ShowMainWindow();
+    result->Success();
+    return;
+  }
   if (method == "hideOrb") {
     HideOrb();
     result->Success();
@@ -184,11 +233,45 @@ void FlutterWindow::HandleWindowMethodCall(
   result->NotImplemented();
 }
 
+void FlutterWindow::ShowMainWindow() {
+  HWND hwnd = GetHandle();
+  if (!hwnd) {
+    return;
+  }
+
+  is_expanded_ = false;
+  ConfigureMainWindow(hwnd);
+
+  HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  double scale = GetScaleFactorForMonitor(monitor);
+  RECT work_area = GetMonitorWorkArea(hwnd);
+
+  int main_width =
+      static_cast<int>(std::lround(kMainWindowWidthLogical * scale));
+  int main_height =
+      static_cast<int>(std::lround(kMainWindowHeightLogical * scale));
+  int center_x = work_area.left +
+                 ((work_area.right - work_area.left) - main_width) / 2;
+  int center_y = work_area.top +
+                 ((work_area.bottom - work_area.top) - main_height) / 2;
+
+  RECT clamped =
+      ClampRectToWorkArea(center_x, center_y, main_width, main_height, work_area);
+  ::SetWindowPos(hwnd, HWND_NOTOPMOST, clamped.left, clamped.top,
+                 clamped.right - clamped.left, clamped.bottom - clamped.top,
+                 SWP_SHOWWINDOW | SWP_FRAMECHANGED);
+  ::ShowWindow(hwnd, SW_SHOW);
+  ::SetForegroundWindow(hwnd);
+  ::SetFocus(hwnd);
+}
+
 void FlutterWindow::ShowCollapsedOrb() {
   HWND hwnd = GetHandle();
   if (!hwnd) {
     return;
   }
+
+  ConfigureOverlayWindow(hwnd);
 
   HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
   double scale = GetScaleFactorForMonitor(monitor);
@@ -201,7 +284,7 @@ void FlutterWindow::ShowCollapsedOrb() {
   int desired_x =
       has_collapsed_origin_ ? collapsed_origin_.x : work_area.right - orb_size - margin;
   int desired_y =
-      has_collapsed_origin_ ? collapsed_origin_.y : work_area.bottom - orb_size - margin;
+      has_collapsed_origin_ ? collapsed_origin_.y : work_area.top + margin;
 
   RECT clamped =
       ClampRectToWorkArea(desired_x, desired_y, orb_size, orb_size, work_area);
@@ -221,6 +304,8 @@ void FlutterWindow::ExpandPanel(double width, double height) {
     return;
   }
 
+  ConfigureOverlayWindow(hwnd);
+
   HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
   double scale = GetScaleFactorForMonitor(monitor);
   RECT work_area = GetMonitorWorkArea(hwnd);
@@ -239,7 +324,7 @@ void FlutterWindow::ExpandPanel(double width, double height) {
       has_collapsed_origin_ = true;
     } else if (!has_collapsed_origin_) {
       collapsed_origin_.x = work_area.right - orb_size - margin;
-      collapsed_origin_.y = work_area.bottom - orb_size - margin;
+      collapsed_origin_.y = work_area.top + margin;
       has_collapsed_origin_ = true;
     }
   }
@@ -247,7 +332,7 @@ void FlutterWindow::ExpandPanel(double width, double height) {
   int panel_width = static_cast<int>(std::lround(width * scale));
   int panel_height = static_cast<int>(std::lround(height * scale));
   int desired_x = collapsed_origin_.x + orb_size - panel_width;
-  int desired_y = collapsed_origin_.y + orb_size - panel_height;
+  int desired_y = collapsed_origin_.y;
 
   RECT clamped = ClampRectToWorkArea(desired_x, desired_y, panel_width,
                                      panel_height, work_area);
@@ -258,6 +343,38 @@ void FlutterWindow::ExpandPanel(double width, double height) {
                  SWP_SHOWWINDOW);
   ::SetForegroundWindow(hwnd);
   ::SetFocus(hwnd);
+}
+
+void FlutterWindow::MoveOrb(double dx, double dy) {
+  HWND hwnd = GetHandle();
+  if (!hwnd) {
+    return;
+  }
+
+  RECT current_rect{};
+  if (!::GetWindowRect(hwnd, &current_rect)) {
+    return;
+  }
+
+  HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  double scale = GetScaleFactorForMonitor(monitor);
+  RECT work_area = GetMonitorWorkArea(hwnd);
+
+  int width = current_rect.right - current_rect.left;
+  int height = current_rect.bottom - current_rect.top;
+  int desired_x = current_rect.left + static_cast<int>(std::lround(dx * scale));
+  int desired_y = current_rect.top + static_cast<int>(std::lround(dy * scale));
+
+  RECT clamped =
+      ClampRectToWorkArea(desired_x, desired_y, width, height, work_area);
+  ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
+                 clamped.right - clamped.left, clamped.bottom - clamped.top,
+                 SWP_NOACTIVATE);
+  if (!is_expanded_) {
+    collapsed_origin_.x = clamped.left;
+    collapsed_origin_.y = clamped.top;
+    has_collapsed_origin_ = true;
+  }
 }
 
 void FlutterWindow::HideOrb() {

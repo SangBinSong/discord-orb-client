@@ -162,7 +162,37 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     );
   }
 
+  bool _isCollapsedOverlayViewport(Size viewportSize) {
+    return viewportSize.width <= widget.orbSize.width + 40 &&
+        viewportSize.height <= widget.orbSize.height + 40;
+  }
+
+  Size _expandedWindowTargetSize() {
+    return Size(
+      widget.panelSize.width + 32,
+      widget.panelSize.height + widget.orbSize.height + 120,
+    );
+  }
+
+  bool _needsWindowExpansion(Size viewportSize, EdgeInsets safePadding) {
+    final availableWidth =
+        viewportSize.width - safePadding.left - safePadding.right;
+    final availableHeight =
+        viewportSize.height - safePadding.top - safePadding.bottom;
+    return _isCollapsedOverlayViewport(viewportSize) ||
+        availableWidth < widget.panelSize.width ||
+        availableHeight < widget.panelSize.height;
+  }
+
   Offset _resolvedOrbOffset(Size viewportSize, EdgeInsets safePadding) {
+    if (_isCollapsedOverlayViewport(viewportSize)) {
+      return Offset(
+        ((viewportSize.width - widget.orbSize.width) / 2)
+            .clamp(0.0, double.infinity),
+        ((viewportSize.height - widget.orbSize.height) / 2)
+            .clamp(0.0, double.infinity),
+      );
+    }
     final raw = _orbOffset ??
         Offset(
           viewportSize.width - safePadding.right - widget.orbSize.width - 16,
@@ -182,6 +212,11 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     }
     if (_isPanelOpen) {
       closeAndClear();
+      return;
+    }
+
+    if (_needsWindowExpansion(viewportSize, safePadding)) {
+      _openAndFetch(_expandedWindowTargetSize());
       return;
     }
 
@@ -356,6 +391,10 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     Size viewportSize,
     EdgeInsets safePadding,
   ) {
+    if (_isCollapsedOverlayViewport(viewportSize)) {
+      unawaited(widget.windowController.moveOrbBy(delta));
+      return;
+    }
     final current = _resolvedOrbOffset(viewportSize, safePadding);
     final next = clampOrbOffset(
       offset: current + delta,
@@ -404,10 +443,12 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
           viewportSize: viewportSize,
           safePadding: safePadding,
         );
+        final canRenderPanel =
+            placement.rect.width >= 180 && placement.rect.height >= 160;
 
         return Stack(
           children: <Widget>[
-            if (_isPanelOpen)
+            if (_isPanelOpen && canRenderPanel)
               Positioned.fromRect(
                 rect: placement.rect,
                 child: MessagePanel(

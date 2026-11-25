@@ -20,6 +20,8 @@ class _RecordingWindowController extends NoopOrbWindowController {
   int collapseCount = 0;
   int hideOrbCount = 0;
   int showCollapsedOrbCount = 0;
+  final List<Offset> moveOrbDeltas = <Offset>[];
+  int showMainWindowCount = 0;
 
   @override
   Future<void> expandPanel(Size size) async {
@@ -40,6 +42,16 @@ class _RecordingWindowController extends NoopOrbWindowController {
   @override
   Future<void> showCollapsedOrb() async {
     showCollapsedOrbCount += 1;
+  }
+
+  @override
+  Future<void> moveOrbBy(Offset delta) async {
+    moveOrbDeltas.add(delta);
+  }
+
+  @override
+  Future<void> showMainWindow() async {
+    showMainWindowCount += 1;
   }
 }
 
@@ -315,6 +327,85 @@ void main() {
       expect(window.showCollapsedOrbCount, 1);
       expect(find.byKey(OrbButton.orbButtonKey), findsOneWidget);
     });
+
+    testWidgets(
+      'collapsed 80x80 desktop viewport centers orb, delegates drag to moveOrbBy, and requests full expanded size on tap without overflow',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController();
+        final controller = OrbShellController();
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1)];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: const Size(80, 80),
+          ),
+        );
+
+        // Orb (56x56) is centered inside 80x80 collapsed overlay window -> (12, 12).
+        final orbTopLeft = tester.getTopLeft(find.byKey(OrbButton.orbButtonKey));
+        final shellTopLeft = tester.getTopLeft(find.byType(OrbShell));
+        expect(orbTopLeft - shellTopLeft, const Offset(12, 12));
+
+        // Dragging in collapsed 80x80 viewport delegates to native window moveOrbBy.
+        await tester.drag(
+          find.byKey(OrbButton.orbButtonKey),
+          const Offset(24, -16),
+        );
+        await tester.pump();
+        expect(window.moveOrbDeltas, isNotEmpty);
+        final totalDelta = window.moveOrbDeltas.fold<Offset>(
+          Offset.zero,
+          (Offset acc, Offset delta) => acc + delta,
+        );
+        expect(totalDelta.dx, greaterThan(0));
+        expect(totalDelta.dy, lessThan(0));
+        // Orb remains centered in the collapsed window.
+        expect(
+          tester.getTopLeft(find.byKey(OrbButton.orbButtonKey)) -
+              tester.getTopLeft(find.byType(OrbShell)),
+          const Offset(12, 12),
+        );
+
+        // Tapping orb in 80x80 viewport requests full expanded size, not clamped 80x80,
+        // and does not throw RenderFlex overflow during the 1-frame resize transition.
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pump();
+
+        expect(controller.isPanelOpen, isTrue);
+        expect(window.expandCount, 1);
+        expect(window.lastExpandSize, isNotNull);
+        expect(window.lastExpandSize!.width, greaterThanOrEqualTo(320 + 32));
+        expect(
+          window.lastExpandSize!.height,
+          greaterThanOrEqualTo(400 + 56 + 96),
+        );
+        // MessagePanel is deferred while viewport is still 80x80.
+        expect(find.byType(MessagePanel), findsNothing);
+        expect(tester.takeException(), isNull);
+
+        // Once native window expands to requested size, panel renders without overlapping orb.
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: window.lastExpandSize!,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byType(MessagePanel), findsOneWidget);
+        expect(find.text('Message body 1'), findsOneWidget);
+        final expandedOrbRect =
+            tester.getRect(find.byKey(OrbButton.orbButtonKey));
+        final panelRect = tester.getRect(find.byType(MessagePanel));
+        expect(expandedOrbRect.overlaps(panelRect), isFalse);
+      },
+    );
   });
 
   group('Lock/sleep & external dismiss memory clearing', () {

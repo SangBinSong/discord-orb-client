@@ -69,6 +69,12 @@ class AndroidOrbWindowController implements OrbWindowController {
   }
 
   @override
+  Future<void> moveOrbBy(Offset delta) async {}
+
+  @override
+  Future<void> showMainWindow() async {}
+
+  @override
   Stream<void> get onLockOrSleep => _lockOrSleepController.stream;
 
   @override

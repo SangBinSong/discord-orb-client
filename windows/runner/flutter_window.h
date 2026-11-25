@@ -28,13 +28,16 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  void ConfigureMainWindow(HWND hwnd);
   void ConfigureOverlayWindow(HWND hwnd);
   void RegisterWindowChannel();
   void HandleWindowMethodCall(
       const flutter::MethodCall<flutter::EncodableValue>& call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+  void ShowMainWindow();
   void ShowCollapsedOrb();
   void ExpandPanel(double width, double height);
+  void MoveOrb(double dx, double dy);
   void HideOrb();
   void UnregisterSessionNotification();
   void NotifyPanelDismissRequested();
@@ -54,6 +57,7 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       window_channel_;
 
+  bool is_overlay_mode_ = false;
   bool is_expanded_ = false;
   bool has_collapsed_origin_ = false;
   POINT collapsed_origin_{0, 0};

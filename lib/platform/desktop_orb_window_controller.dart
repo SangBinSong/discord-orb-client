@@ -41,11 +41,15 @@ class DesktopOrbWindowController implements OrbWindowController {
   }
 
   @override
-  Future<void> expandPanel(Size size) async {
-    await _channel.invokeMethod<void>('expandPanel', <String, dynamic>{
-      'width': size.width,
-      'height': size.height,
-    });
+  Future<OrbPanelExpandDirection> expandPanel(Size size) async {
+    final result = await _channel.invokeMethod<dynamic>(
+      'expandPanel',
+      <String, dynamic>{
+        'width': size.width,
+        'height': size.height,
+      },
+    );
+    return OrbPanelExpandDirection.fromWireValue(result);
   }
 
   @override
@@ -61,6 +65,13 @@ class DesktopOrbWindowController implements OrbWindowController {
   @override
   Future<void> startOrbDrag() async {
     await _channel.invokeMethod<void>('startOrbDrag');
+  }
+
+  @override
+  Future<void> startPanelResize(PanelResizeEdge edge) async {
+    await _channel.invokeMethod<void>('startPanelResize', <String, dynamic>{
+      'edge': edge.wireName,
+    });
   }
 
   @override

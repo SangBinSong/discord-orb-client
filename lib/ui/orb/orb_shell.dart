@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../contracts/orb_window_controller.dart';
@@ -16,6 +18,10 @@ class OrbShellController extends ChangeNotifier {
 
   bool get isPanelOpen => _state?.isPanelOpen ?? false;
   bool get isOrbHidden => _state?.isOrbHidden ?? false;
+  OrbPanelExpandDirection get expandDirection =>
+      _state?.expandDirection ?? OrbPanelExpandDirection.below;
+  ChatListLayout get chatListLayout =>
+      _state?.chatListLayout ?? ChatListLayout.standard;
   OrbPreviewState get previewState =>
       _state?.previewState ?? OrbPreviewState.idle;
   List<ChannelMessagePreview> get messages =>
@@ -47,6 +53,7 @@ class OrbShell extends StatefulWidget {
     this.channelId,
     this.channelName,
     this.guildName,
+    this.guildIconUrl,
     this.controller,
     this.orbSize = const Size(56, 56),
     this.panelSize = const Size(320, 400),
@@ -55,11 +62,28 @@ class OrbShell extends StatefulWidget {
     this.showRestoreChipWhenHidden = true,
     this.streamReconnectBaseDelay = const Duration(seconds: 1),
     this.streamReconnectMaxDelay = const Duration(seconds: 30),
+    this.chatListLayout = ChatListLayout.standard,
+    this.onChatListLayoutChanged,
+    this.onExpandDirectionChanged,
     this.onReauthenticate,
     this.onReselectChannel,
   });
 
   static const Key restoreChipKey = Key('discord_orb_restore_chip');
+  static const Key panelResizeHandleKey = Key('discord_orb_panel_resize_handle');
+
+  /// Key for an individual edge/corner resize hit zone on the expanded panel card.
+  static Key panelResizeEdgeKey(PanelResizeEdge edge) =>
+      Key('discord_orb_panel_resize_${edge.wireName}');
+
+  /// Key for the visible corner resize grip indicator on the expanded panel card.
+  static Key panelResizeGripKey(PanelResizeEdge edge) =>
+      Key('discord_orb_panel_resize_grip_${edge.wireName}');
+
+  static const double minExpandedWidth = 260;
+  static const double maxExpandedWidth = 720;
+  static const double minExpandedHeight = 240;
+  static const double maxExpandedHeight = 800;
 
   final PreviewRepository previewRepository;
   final OrbWindowController windowController;
@@ -67,6 +91,7 @@ class OrbShell extends StatefulWidget {
   final String? channelId;
   final String? channelName;
   final String? guildName;
+  final String? guildIconUrl;
   final OrbShellController? controller;
   final Size orbSize;
   final Size panelSize;
@@ -75,6 +100,9 @@ class OrbShell extends StatefulWidget {
   final bool showRestoreChipWhenHidden;
   final Duration streamReconnectBaseDelay;
   final Duration streamReconnectMaxDelay;
+  final ChatListLayout chatListLayout;
+  final ValueChanged<ChatListLayout>? onChatListLayoutChanged;
+  final ValueChanged<OrbPanelExpandDirection>? onExpandDirectionChanged;
   final VoidCallback? onReauthenticate;
   final VoidCallback? onReselectChannel;
 
@@ -90,8 +118,11 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
   int _streamReconnectAttempts = 0;
 
   Offset? _orbOffset;
+  Size? _customPanelSize;
   bool _isOrbHidden = false;
   bool _isPanelOpen = false;
+  OrbPanelExpandDirection _expandDirection = OrbPanelExpandDirection.below;
+  late ChatListLayout _chatListLayout;
   OrbPreviewState _previewState = OrbPreviewState.idle;
   List<ChannelMessagePreview> _messages = const <ChannelMessagePreview>[];
   OrbException? _error;
@@ -99,6 +130,8 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
 
   bool get isPanelOpen => _isPanelOpen;
   bool get isOrbHidden => _isOrbHidden;
+  OrbPanelExpandDirection get expandDirection => _expandDirection;
+  ChatListLayout get chatListLayout => _chatListLayout;
   OrbPreviewState get previewState => _previewState;
   List<ChannelMessagePreview> get messages =>
       List<ChannelMessagePreview>.unmodifiable(_messages);
@@ -110,6 +143,7 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     widget.controller?._attach(this);
     _orbOffset = widget.initialOrbOffset;
+    _chatListLayout = widget.chatListLayout;
     _subscribeToWindowEvents();
   }
 
@@ -141,6 +175,9 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
         _messages = const <ChannelMessagePreview>[];
         _error = null;
       }
+    }
+    if (oldWidget.chatListLayout != widget.chatListLayout) {
+      _chatListLayout = widget.chatListLayout;
     }
   }
 
@@ -195,21 +232,27 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
         viewportSize.height <= widget.orbSize.height + 40;
   }
 
+  Size get _effectivePanelSize => _customPanelSize ?? widget.panelSize;
+
   Size _expandedWindowTargetSize() {
+    final panel = _effectivePanelSize;
     return Size(
-      widget.panelSize.width + 32,
-      widget.panelSize.height + widget.orbSize.height + 120,
+      (panel.width + 32)
+          .clamp(OrbShell.minExpandedWidth, OrbShell.maxExpandedWidth),
+      (panel.height + widget.orbSize.height + 120)
+          .clamp(OrbShell.minExpandedHeight, OrbShell.maxExpandedHeight),
     );
   }
 
   bool _needsWindowExpansion(Size viewportSize, EdgeInsets safePadding) {
+    final panel = _effectivePanelSize;
     final availableWidth =
         viewportSize.width - safePadding.left - safePadding.right;
     final availableHeight =
         viewportSize.height - safePadding.top - safePadding.bottom;
     return _isCollapsedOverlayViewport(viewportSize) ||
-        availableWidth < widget.panelSize.width ||
-        availableHeight < widget.panelSize.height;
+        availableWidth < panel.width ||
+        availableHeight < panel.height;
   }
 
   bool _usesNativeDragForViewport(Size viewportSize) {
@@ -226,16 +269,63 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
             .clamp(0.0, double.infinity),
       );
     }
-    final topRightAnchor = Offset(
+    final anchorY = widget.windowController.usesNativeWindowDrag &&
+            _isPanelOpen &&
+            _expandDirection == OrbPanelExpandDirection.above
+        ? viewportSize.height - safePadding.bottom - widget.orbSize.height - 16
+        : safePadding.top + 16;
+    final anchoredOffset = Offset(
       viewportSize.width - safePadding.right - widget.orbSize.width - 16,
-      safePadding.top + 16,
+      anchorY,
     );
     final raw = widget.windowController.usesNativeWindowDrag
-        ? topRightAnchor
-        : (_orbOffset ?? topRightAnchor);
+        ? anchoredOffset
+        : (_orbOffset ?? anchoredOffset);
     return clampOrbOffset(
       offset: raw,
       orbSize: widget.orbSize,
+      viewportSize: viewportSize,
+      safePadding: safePadding,
+    );
+  }
+
+  PanelPlacement _resolvedPanelPlacement({
+    required Offset orbOffset,
+    required Size viewportSize,
+    required EdgeInsets safePadding,
+  }) {
+    final orbRect = orbOffset & widget.orbSize;
+    if (widget.windowController.usesNativeWindowDrag &&
+        !_isCollapsedOverlayViewport(viewportSize)) {
+      final minLeft = safePadding.left + 16;
+      final maxRight =
+          math.max(minLeft, viewportSize.width - safePadding.right - 16);
+      final width = math.max(0.0, maxRight - minLeft);
+      final controlsReserve = viewportSize.height >= 200 ? 72.0 : 16.0;
+
+      if (_expandDirection == OrbPanelExpandDirection.above) {
+        final top = safePadding.top + controlsReserve;
+        final bottom = math.max(top, orbRect.top - 8.0);
+        return PanelPlacement(
+          rect: Rect.fromLTWH(minLeft, top, width, math.max(0.0, bottom - top)),
+          direction: PanelPlacementDirection.above,
+        );
+      }
+
+      final top = orbRect.bottom + 8.0;
+      final bottom = math.max(
+        top,
+        viewportSize.height - safePadding.bottom - controlsReserve,
+      );
+      return PanelPlacement(
+        rect: Rect.fromLTWH(minLeft, top, width, math.max(0.0, bottom - top)),
+        direction: PanelPlacementDirection.below,
+      );
+    }
+
+    return computePanelRect(
+      orbRect: orbRect,
+      panelSize: _effectivePanelSize,
       viewportSize: viewportSize,
       safePadding: safePadding,
     );
@@ -259,7 +349,7 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     final orbRect = currentOrbOffset & widget.orbSize;
     final placement = computePanelRect(
       orbRect: orbRect,
-      panelSize: widget.panelSize,
+      panelSize: _effectivePanelSize,
       viewportSize: viewportSize,
       safePadding: safePadding,
     );
@@ -278,8 +368,274 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
       _activeRequestToken = requestToken;
     });
 
-    unawaited(widget.windowController.expandPanel(targetPanelSize));
+    unawaited(_expandWindowAndSyncDirection(targetPanelSize, requestToken));
     _fetchWithToken(requestToken);
+  }
+
+  Future<void> _expandWindowAndSyncDirection(
+    Size targetPanelSize,
+    Object requestToken,
+  ) async {
+    try {
+      final direction =
+          await widget.windowController.expandPanel(targetPanelSize);
+      if (!mounted ||
+          !_isPanelOpen ||
+          !identical(_activeRequestToken, requestToken)) {
+        return;
+      }
+      if (direction != _expandDirection) {
+        setState(() {
+          _expandDirection = direction;
+        });
+        widget.onExpandDirectionChanged?.call(direction);
+      }
+    } catch (_) {
+      // Ignore host window channel failures in headless tests.
+    }
+  }
+
+  void _handleLayoutChanged(ChatListLayout next) {
+    if (next != _chatListLayout) {
+      setState(() {
+        _chatListLayout = next;
+      });
+    }
+    widget.onChatListLayoutChanged?.call(next);
+  }
+
+  void _handleNonNativeResizeDelta(
+    PanelResizeEdge edge,
+    Offset delta,
+    Size viewportSize,
+  ) {
+    final current = _effectivePanelSize;
+    final maxWidth = math.min(
+      OrbShell.maxExpandedWidth,
+      math.max(OrbShell.minExpandedWidth, viewportSize.width),
+    );
+    final maxHeight = math.min(
+      OrbShell.maxExpandedHeight,
+      math.max(OrbShell.minExpandedHeight, viewportSize.height),
+    );
+
+    final double dw = switch (edge) {
+      PanelResizeEdge.left ||
+      PanelResizeEdge.topLeft ||
+      PanelResizeEdge.bottomLeft =>
+        -delta.dx,
+      PanelResizeEdge.right ||
+      PanelResizeEdge.topRight ||
+      PanelResizeEdge.bottomRight =>
+        delta.dx,
+      PanelResizeEdge.top || PanelResizeEdge.bottom => 0.0,
+    };
+    final double dh = switch (edge) {
+      PanelResizeEdge.top ||
+      PanelResizeEdge.topLeft ||
+      PanelResizeEdge.topRight =>
+        -delta.dy,
+      PanelResizeEdge.bottom ||
+      PanelResizeEdge.bottomLeft ||
+      PanelResizeEdge.bottomRight =>
+        delta.dy,
+      PanelResizeEdge.left || PanelResizeEdge.right => 0.0,
+    };
+
+    final nextWidth =
+        (current.width + dw).clamp(OrbShell.minExpandedWidth, maxWidth);
+    final nextHeight =
+        (current.height + dh).clamp(OrbShell.minExpandedHeight, maxHeight);
+    setState(() {
+      _customPanelSize = Size(nextWidth.toDouble(), nextHeight.toDouble());
+    });
+  }
+
+  void _handlePanelEdgePointerDown(
+    PanelResizeEdge edge,
+    PointerDownEvent event,
+  ) {
+    if (!widget.windowController.usesNativeWindowDrag) {
+      return;
+    }
+    if ((event.buttons & kPrimaryButton) == 0) {
+      return;
+    }
+    unawaited(widget.windowController.startPanelResize(edge));
+  }
+
+  MouseCursor _cursorForEdge(PanelResizeEdge edge) {
+    return switch (edge) {
+      PanelResizeEdge.left => SystemMouseCursors.resizeLeft,
+      PanelResizeEdge.right => SystemMouseCursors.resizeRight,
+      PanelResizeEdge.top => SystemMouseCursors.resizeUp,
+      PanelResizeEdge.bottom => SystemMouseCursors.resizeDown,
+      PanelResizeEdge.topLeft ||
+      PanelResizeEdge.bottomRight =>
+        SystemMouseCursors.resizeUpLeftDownRight,
+      PanelResizeEdge.topRight ||
+      PanelResizeEdge.bottomLeft =>
+        SystemMouseCursors.resizeUpRightDownLeft,
+    };
+  }
+
+  Widget _buildResizeZone({
+    required PanelResizeEdge edge,
+    required Size viewportSize,
+    Key? zoneKey,
+    Widget? child,
+  }) {
+    final usesNative = widget.windowController.usesNativeWindowDrag;
+    final Widget interactive = usesNative
+        ? Listener(
+            key: zoneKey ?? OrbShell.panelResizeEdgeKey(edge),
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (PointerDownEvent event) =>
+                _handlePanelEdgePointerDown(edge, event),
+            child: child ?? const SizedBox.expand(),
+          )
+        : GestureDetector(
+            key: zoneKey ?? OrbShell.panelResizeEdgeKey(edge),
+            behavior: HitTestBehavior.opaque,
+            onPanUpdate: (DragUpdateDetails details) =>
+                _handleNonNativeResizeDelta(edge, details.delta, viewportSize),
+            child: child ?? const SizedBox.expand(),
+          );
+    return MouseRegion(
+      cursor: _cursorForEdge(edge),
+      child: interactive,
+    );
+  }
+
+  List<Widget> _buildPanelResizeOverlays({
+    required BuildContext context,
+    required Size viewportSize,
+    required PanelPlacementDirection direction,
+  }) {
+    const double edgeThickness = 7;
+    const double cornerInset = 18;
+    const double gripSize = 20;
+    final gripColor = Theme.of(context)
+        .colorScheme
+        .onSurfaceVariant
+        .withValues(alpha: 0.6);
+    final isAbove = direction == PanelPlacementDirection.above;
+    final usesNative = widget.windowController.usesNativeWindowDrag;
+
+    Widget cornerGrip(PanelResizeEdge edge) {
+      return Semantics(
+        label: 'Resize chat panel',
+        child: SizedBox(
+          key: OrbShell.panelResizeGripKey(edge),
+          width: gripSize,
+          height: gripSize,
+          child: CustomPaint(
+            painter: _ResizeGripPainter(
+              edge: edge,
+              color: gripColor,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return <Widget>[
+      // Left edge
+      Positioned(
+        left: 0,
+        top: cornerInset,
+        bottom: cornerInset,
+        width: edgeThickness,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.left,
+          viewportSize: viewportSize,
+        ),
+      ),
+      // Right edge
+      Positioned(
+        right: 0,
+        top: cornerInset,
+        bottom: cornerInset,
+        width: edgeThickness,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.right,
+          viewportSize: viewportSize,
+        ),
+      ),
+      // Top edge (slim 6px so header buttons stay fully clickable)
+      Positioned(
+        left: cornerInset,
+        right: cornerInset,
+        top: 0,
+        height: 6,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.top,
+          viewportSize: viewportSize,
+        ),
+      ),
+      // Bottom edge
+      Positioned(
+        left: cornerInset,
+        right: cornerInset,
+        bottom: 0,
+        height: edgeThickness,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.bottom,
+          viewportSize: viewportSize,
+        ),
+      ),
+      // Top-left corner (shows visible grip when expanded above)
+      Positioned(
+        left: 0,
+        top: 0,
+        width: isAbove ? gripSize : 14,
+        height: isAbove ? gripSize : 14,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.topLeft,
+          viewportSize: viewportSize,
+          child: isAbove ? cornerGrip(PanelResizeEdge.topLeft) : null,
+        ),
+      ),
+      // Top-right corner (compact 10x10 so it never covers the header close button)
+      Positioned(
+        right: 0,
+        top: 0,
+        width: 10,
+        height: 10,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.topRight,
+          viewportSize: viewportSize,
+        ),
+      ),
+      // Bottom-left corner (shows visible grip when expanded below)
+      Positioned(
+        left: 0,
+        bottom: 0,
+        width: !isAbove ? gripSize : 16,
+        height: !isAbove ? gripSize : 16,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.bottomLeft,
+          viewportSize: viewportSize,
+          child: !isAbove ? cornerGrip(PanelResizeEdge.bottomLeft) : null,
+        ),
+      ),
+      // Bottom-right corner (primary visible grip when expanded below, and
+      // keeps panelResizeHandleKey for non-native fallback tests)
+      Positioned(
+        right: 0,
+        bottom: 0,
+        width: gripSize,
+        height: gripSize,
+        child: _buildResizeZone(
+          edge: PanelResizeEdge.bottomRight,
+          viewportSize: viewportSize,
+          zoneKey: usesNative
+              ? OrbShell.panelResizeEdgeKey(PanelResizeEdge.bottomRight)
+              : OrbShell.panelResizeHandleKey,
+          child: !isAbove ? cornerGrip(PanelResizeEdge.bottomRight) : null,
+        ),
+      ),
+    ];
   }
 
   void _retryFetch() {
@@ -547,21 +903,28 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     }
     if (!mounted) {
       _isPanelOpen = false;
+      _expandDirection = OrbPanelExpandDirection.below;
       _previewState = OrbPreviewState.idle;
       _messages = const <ChannelMessagePreview>[];
       _error = null;
       return;
     }
     if (wasOpen ||
+        _expandDirection != OrbPanelExpandDirection.below ||
         _messages.isNotEmpty ||
         _previewState != OrbPreviewState.idle ||
         _error != null) {
+      final directionChanged = _expandDirection != OrbPanelExpandDirection.below;
       setState(() {
         _isPanelOpen = false;
+        _expandDirection = OrbPanelExpandDirection.below;
         _previewState = OrbPreviewState.idle;
         _messages = const <ChannelMessagePreview>[];
         _error = null;
       });
+      if (directionChanged) {
+        widget.onExpandDirectionChanged?.call(OrbPanelExpandDirection.below);
+      }
     }
   }
 
@@ -650,31 +1013,45 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
         }
 
         final orbOffset = _resolvedOrbOffset(viewportSize, safePadding);
-        final orbRect = orbOffset & widget.orbSize;
-        final placement = computePanelRect(
-          orbRect: orbRect,
-          panelSize: widget.panelSize,
+        final placement = _resolvedPanelPlacement(
+          orbOffset: orbOffset,
           viewportSize: viewportSize,
           safePadding: safePadding,
         );
         final canRenderPanel =
-            placement.rect.width >= 180 && placement.rect.height >= 160;
+            placement.rect.width >= 180 && placement.rect.height >= 80;
+        final showResizeOverlays = !_isCollapsedOverlayViewport(viewportSize);
 
         return Stack(
           children: <Widget>[
             if (_isPanelOpen && canRenderPanel)
               Positioned.fromRect(
                 rect: placement.rect,
-                child: MessagePanel(
-                  state: _previewState,
-                  messages: _messages,
-                  channelName: widget.channelName,
-                  guildName: widget.guildName,
-                  error: _error,
-                  onClose: closeAndClear,
-                  onRetry: _retryFetch,
-                  onReauthenticate: widget.onReauthenticate,
-                  onReselectChannel: widget.onReselectChannel,
+                child: Stack(
+                  children: <Widget>[
+                    Positioned.fill(
+                      child: MessagePanel(
+                        state: _previewState,
+                        messages: _messages,
+                        channelName: widget.channelName,
+                        guildName: widget.guildName,
+                        guildIconUrl: widget.guildIconUrl,
+                        layout: _chatListLayout,
+                        onLayoutChanged: _handleLayoutChanged,
+                        error: _error,
+                        onClose: closeAndClear,
+                        onRetry: _retryFetch,
+                        onReauthenticate: widget.onReauthenticate,
+                        onReselectChannel: widget.onReselectChannel,
+                      ),
+                    ),
+                    if (showResizeOverlays)
+                      ..._buildPanelResizeOverlays(
+                        context: context,
+                        viewportSize: viewportSize,
+                        direction: placement.direction,
+                      ),
+                  ],
                 ),
               ),
             Positioned(
@@ -695,5 +1072,69 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
         );
       },
     );
+  }
+}
+
+class _ResizeGripPainter extends CustomPainter {
+  const _ResizeGripPainter({
+    required this.edge,
+    required this.color,
+  });
+
+  final PanelResizeEdge edge;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..strokeCap = StrokeCap.round;
+
+    const offsets = <double>[5.0, 9.0, 13.0];
+    switch (edge) {
+      case PanelResizeEdge.bottomRight:
+        for (final d in offsets) {
+          canvas.drawLine(
+            Offset(size.width - d, size.height - 3),
+            Offset(size.width - 3, size.height - d),
+            paint,
+          );
+        }
+      case PanelResizeEdge.bottomLeft:
+        for (final d in offsets) {
+          canvas.drawLine(
+            Offset(3, size.height - d),
+            Offset(d, size.height - 3),
+            paint,
+          );
+        }
+      case PanelResizeEdge.topLeft:
+        for (final d in offsets) {
+          canvas.drawLine(
+            Offset(3, d),
+            Offset(d, 3),
+            paint,
+          );
+        }
+      case PanelResizeEdge.topRight:
+        for (final d in offsets) {
+          canvas.drawLine(
+            Offset(size.width - d, 3),
+            Offset(size.width - 3, d),
+            paint,
+          );
+        }
+      case PanelResizeEdge.left:
+      case PanelResizeEdge.right:
+      case PanelResizeEdge.top:
+      case PanelResizeEdge.bottom:
+        break;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ResizeGripPainter oldDelegate) {
+    return oldDelegate.edge != edge || oldDelegate.color != color;
   }
 }

@@ -17,6 +17,11 @@ constexpr char kWindowChannelName[] = "discord_orb/window";
 constexpr double kCollapsedOrbSizeLogical = 80.0;
 constexpr double kMainWindowWidthLogical = 480.0;
 constexpr double kMainWindowHeightLogical = 680.0;
+constexpr double kMinExpandedWidthLogical = 260.0;
+constexpr double kMinExpandedHeightLogical = 240.0;
+constexpr double kMaxExpandedWidthLogical = 720.0;
+constexpr double kMaxExpandedHeightLogical = 800.0;
+constexpr double kResizeEdgeThicknessLogical = 8.0;
 constexpr double kDefaultMarginLogical = 24.0;
 
 std::optional<double> TryGetDoubleArg(const flutter::EncodableMap& args,
@@ -194,8 +199,8 @@ void FlutterWindow::HandleWindowMethodCall(
                     "expandPanel requires positive numeric width and height");
       return;
     }
-    ExpandPanel(*width, *height);
-    result->Success();
+    std::string direction = ExpandPanel(*width, *height);
+    result->Success(flutter::EncodableValue(direction));
     return;
   }
   if (method == "moveOrb") {
@@ -222,6 +227,42 @@ void FlutterWindow::HandleWindowMethodCall(
   }
   if (method == "startOrbDrag") {
     StartOrbDrag();
+    result->Success();
+    return;
+  }
+  if (method == "startPanelResize") {
+    const auto* args =
+        call.arguments()
+            ? std::get_if<flutter::EncodableMap>(call.arguments())
+            : nullptr;
+    if (!args) {
+      result->Error("invalid_arguments",
+                    "startPanelResize requires a map with edge");
+      return;
+    }
+    auto it = args->find(flutter::EncodableValue("edge"));
+    const auto* edge =
+        it != args->end() ? std::get_if<std::string>(&it->second) : nullptr;
+    if (!edge) {
+      result->Error("invalid_arguments",
+                    "startPanelResize requires a string edge");
+      return;
+    }
+    WPARAM hit_test = HTNOWHERE;
+    if (*edge == "left") hit_test = HTLEFT;
+    else if (*edge == "right") hit_test = HTRIGHT;
+    else if (*edge == "top") hit_test = HTTOP;
+    else if (*edge == "bottom") hit_test = HTBOTTOM;
+    else if (*edge == "topLeft") hit_test = HTTOPLEFT;
+    else if (*edge == "topRight") hit_test = HTTOPRIGHT;
+    else if (*edge == "bottomLeft") hit_test = HTBOTTOMLEFT;
+    else if (*edge == "bottomRight") hit_test = HTBOTTOMRIGHT;
+    if (hit_test == HTNOWHERE) {
+      result->Error("invalid_arguments",
+                    "startPanelResize received an unknown edge");
+      return;
+    }
+    StartPanelResize(hit_test);
     result->Success();
     return;
   }
@@ -300,6 +341,7 @@ void FlutterWindow::ShowCollapsedOrb() {
   collapsed_origin_.x = clamped.left;
   collapsed_origin_.y = clamped.top;
   has_collapsed_origin_ = true;
+  expanded_above_ = false;
   is_expanded_ = false;
   did_move_while_expanded_ = false;
 
@@ -308,10 +350,10 @@ void FlutterWindow::ShowCollapsedOrb() {
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
-void FlutterWindow::ExpandPanel(double width, double height) {
+std::string FlutterWindow::ExpandPanel(double width, double height) {
   HWND hwnd = GetHandle();
   if (!hwnd) {
-    return;
+    return "below";
   }
 
   ConfigureOverlayWindow(hwnd);
@@ -339,10 +381,34 @@ void FlutterWindow::ExpandPanel(double width, double height) {
     }
   }
 
-  int panel_width = static_cast<int>(std::lround(width * scale));
-  int panel_height = static_cast<int>(std::lround(height * scale));
+  double logical_width =
+      has_persisted_expanded_size_ ? persisted_expanded_width_logical_ : width;
+  double logical_height =
+      has_persisted_expanded_size_ ? persisted_expanded_height_logical_ : height;
+  logical_width = (std::min)((std::max)(logical_width, kMinExpandedWidthLogical),
+                             kMaxExpandedWidthLogical);
+  logical_height =
+      (std::min)((std::max)(logical_height, kMinExpandedHeightLogical),
+                 kMaxExpandedHeightLogical);
+
+  int panel_width = static_cast<int>(std::lround(logical_width * scale));
+  int panel_height = static_cast<int>(std::lround(logical_height * scale));
+
+  int space_below = static_cast<int>(work_area.bottom) - collapsed_origin_.y;
+  int space_above =
+      (collapsed_origin_.y + orb_size) - static_cast<int>(work_area.top);
+  if (space_below >= panel_height) {
+    expanded_above_ = false;
+  } else if (space_above > space_below) {
+    expanded_above_ = true;
+  } else {
+    expanded_above_ = false;
+  }
+
   int desired_x = collapsed_origin_.x + orb_size - panel_width;
-  int desired_y = collapsed_origin_.y;
+  int desired_y = expanded_above_
+                      ? (collapsed_origin_.y + orb_size - panel_height)
+                      : collapsed_origin_.y;
 
   RECT clamped = ClampRectToWorkArea(desired_x, desired_y, panel_width,
                                      panel_height, work_area);
@@ -354,6 +420,7 @@ void FlutterWindow::ExpandPanel(double width, double height) {
                  SWP_SHOWWINDOW);
   ::SetForegroundWindow(hwnd);
   ::SetFocus(hwnd);
+  return expanded_above_ ? "above" : "below";
 }
 
 void FlutterWindow::StartOrbDrag() {
@@ -382,6 +449,45 @@ void FlutterWindow::StartOrbDrag() {
     if (is_expanded_) {
       did_move_while_expanded_ = true;
     }
+    SyncCollapsedOriginFromWindow(hwnd);
+  }
+}
+
+void FlutterWindow::StartPanelResize(WPARAM hit_test) {
+  HWND hwnd = GetHandle();
+  if (!hwnd || !is_overlay_mode_ || !is_expanded_ || is_native_dragging_) {
+    return;
+  }
+
+  is_native_dragging_ = true;
+  ::ReleaseCapture();
+  ::SendMessage(hwnd, WM_NCLBUTTONDOWN, hit_test, 0);
+  is_native_dragging_ = false;
+
+  RECT current_rect{};
+  if (::GetWindowRect(hwnd, &current_rect)) {
+    HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    double scale = GetScaleFactorForMonitor(monitor);
+    RECT work_area = GetMonitorWorkArea(hwnd);
+    int width = current_rect.right - current_rect.left;
+    int height = current_rect.bottom - current_rect.top;
+    RECT clamped = ClampRectToWorkArea(current_rect.left, current_rect.top,
+                                       width, height, work_area);
+    if (clamped.left != current_rect.left || clamped.top != current_rect.top ||
+        (clamped.right - clamped.left) != width ||
+        (clamped.bottom - clamped.top) != height) {
+      ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
+                     clamped.right - clamped.left, clamped.bottom - clamped.top,
+                     SWP_NOACTIVATE);
+    }
+    if (scale > 0.0) {
+      persisted_expanded_width_logical_ =
+          static_cast<double>(clamped.right - clamped.left) / scale;
+      persisted_expanded_height_logical_ =
+          static_cast<double>(clamped.bottom - clamped.top) / scale;
+      has_persisted_expanded_size_ = true;
+    }
+    did_move_while_expanded_ = true;
     SyncCollapsedOriginFromWindow(hwnd);
   }
 }
@@ -417,6 +523,35 @@ void FlutterWindow::MoveOrb(double dx, double dy) {
   SyncCollapsedOriginFromWindow(hwnd);
 }
 
+LRESULT FlutterWindow::HitTestResizeEdge(HWND hwnd, POINT screen_pt) const {
+  if (!is_overlay_mode_ || !is_expanded_) {
+    return HTNOWHERE;
+  }
+  RECT rect{};
+  if (!::GetWindowRect(hwnd, &rect)) {
+    return HTNOWHERE;
+  }
+  HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  double scale = GetScaleFactorForMonitor(monitor);
+  int edge = static_cast<int>(std::lround(kResizeEdgeThicknessLogical * scale));
+
+  bool on_left = screen_pt.x >= rect.left && screen_pt.x < rect.left + edge;
+  bool on_right = screen_pt.x <= rect.right && screen_pt.x > rect.right - edge;
+  bool on_top = screen_pt.y >= rect.top && screen_pt.y < rect.top + edge;
+  bool on_bottom =
+      screen_pt.y <= rect.bottom && screen_pt.y > rect.bottom - edge;
+
+  if (on_top && on_left) return HTTOPLEFT;
+  if (on_top && on_right) return HTTOPRIGHT;
+  if (on_bottom && on_left) return HTBOTTOMLEFT;
+  if (on_bottom && on_right) return HTBOTTOMRIGHT;
+  if (on_left) return HTLEFT;
+  if (on_right) return HTRIGHT;
+  if (on_top) return HTTOP;
+  if (on_bottom) return HTBOTTOM;
+  return HTNOWHERE;
+}
+
 bool FlutterWindow::IsPointInOrbDragRegion(HWND hwnd, POINT screen_pt) const {
   if (!is_overlay_mode_) {
     return false;
@@ -433,8 +568,13 @@ bool FlutterWindow::IsPointInOrbDragRegion(HWND hwnd, POINT screen_pt) const {
   double scale = GetScaleFactorForMonitor(monitor);
   int orb_size =
       static_cast<int>(std::lround(kCollapsedOrbSizeLogical * scale));
-  return screen_pt.x >= rect.right - orb_size && screen_pt.x <= rect.right &&
-         screen_pt.y >= rect.top && screen_pt.y <= rect.top + orb_size;
+  if (screen_pt.x < rect.right - orb_size || screen_pt.x > rect.right) {
+    return false;
+  }
+  if (expanded_above_) {
+    return screen_pt.y >= rect.bottom - orb_size && screen_pt.y <= rect.bottom;
+  }
+  return screen_pt.y >= rect.top && screen_pt.y <= rect.top + orb_size;
 }
 
 void FlutterWindow::SyncCollapsedOriginFromWindow(HWND hwnd) {
@@ -452,7 +592,9 @@ void FlutterWindow::SyncCollapsedOriginFromWindow(HWND hwnd) {
       static_cast<int>(std::lround(kCollapsedOrbSizeLogical * scale));
 
   int raw_x = is_expanded_ ? (current_rect.right - orb_size) : current_rect.left;
-  int raw_y = current_rect.top;
+  int raw_y = (is_expanded_ && expanded_above_)
+                  ? (current_rect.bottom - orb_size)
+                  : current_rect.top;
   RECT clamped_orb =
       ClampRectToWorkArea(raw_x, raw_y, orb_size, orb_size, work_area);
   collapsed_origin_.x = clamped_orb.left;
@@ -528,16 +670,53 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
-  if (message == WM_NCHITTEST && is_overlay_mode_ && is_native_dragging_) {
+  if (message == WM_GETMINMAXINFO && is_overlay_mode_ && is_expanded_) {
+    auto* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+    if (mmi != nullptr) {
+      HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      double scale = GetScaleFactorForMonitor(monitor);
+      mmi->ptMinTrackSize.x =
+          static_cast<LONG>(std::lround(kMinExpandedWidthLogical * scale));
+      mmi->ptMinTrackSize.y =
+          static_cast<LONG>(std::lround(kMinExpandedHeightLogical * scale));
+      mmi->ptMaxTrackSize.x =
+          static_cast<LONG>(std::lround(kMaxExpandedWidthLogical * scale));
+      mmi->ptMaxTrackSize.y =
+          static_cast<LONG>(std::lround(kMaxExpandedHeightLogical * scale));
+      return 0;
+    }
+  }
+
+  if (message == WM_NCHITTEST && is_overlay_mode_) {
     POINT screen_pt{static_cast<short>(LOWORD(lparam)),
                     static_cast<short>(HIWORD(lparam))};
-    if (IsPointInOrbDragRegion(hwnd, screen_pt)) {
+    if (is_expanded_) {
+      LRESULT resize_hit = HitTestResizeEdge(hwnd, screen_pt);
+      if (resize_hit != HTNOWHERE) {
+        return resize_hit;
+      }
+    }
+    if (is_native_dragging_ && IsPointInOrbDragRegion(hwnd, screen_pt)) {
       return HTCAPTION;
     }
   }
 
   if (message == WM_EXITSIZEMOVE && is_overlay_mode_) {
     if (is_expanded_) {
+      RECT current_rect{};
+      if (::GetWindowRect(hwnd, &current_rect)) {
+        HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        double scale = GetScaleFactorForMonitor(monitor);
+        if (scale > 0.0) {
+          persisted_expanded_width_logical_ =
+              static_cast<double>(current_rect.right - current_rect.left) /
+              scale;
+          persisted_expanded_height_logical_ =
+              static_cast<double>(current_rect.bottom - current_rect.top) /
+              scale;
+          has_persisted_expanded_size_ = true;
+        }
+      }
       did_move_while_expanded_ = true;
     }
     SyncCollapsedOriginFromWindow(hwnd);

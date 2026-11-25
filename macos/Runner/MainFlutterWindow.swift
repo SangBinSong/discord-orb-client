@@ -5,14 +5,51 @@ class MainFlutterWindow: NSWindow {
   private static let channelName = "discord_orb/window"
   private static let collapsedOrbSize = NSSize(width: 80, height: 80)
   private static let mainWindowSize = NSSize(width: 480, height: 680)
+  private static let minExpandedSize = NSSize(width: 260, height: 240)
+  private static let maxExpandedSize = NSSize(width: 720, height: 800)
+  private static let persistedWidthDefaultsKey = "discord_orb.expanded_panel_width"
+  private static let persistedHeightDefaultsKey = "discord_orb.expanded_panel_height"
   private static let defaultMargin: CGFloat = 24
   private static let escapeKeyCode: UInt16 = 53
   private static let dragThreshold: CGFloat = 4.0
+
+  private enum ExpandDirection: String {
+    case below
+    case above
+  }
+
+  private struct ResizeEdges: OptionSet {
+    let rawValue: Int
+    static let left = ResizeEdges(rawValue: 1 << 0)
+    static let right = ResizeEdges(rawValue: 1 << 1)
+    static let top = ResizeEdges(rawValue: 1 << 2)
+    static let bottom = ResizeEdges(rawValue: 1 << 3)
+
+    init(rawValue: Int) {
+      self.rawValue = rawValue
+    }
+
+    init?(wireName: String) {
+      switch wireName {
+      case "left": self = [.left]
+      case "right": self = [.right]
+      case "top": self = [.top]
+      case "bottom": self = [.bottom]
+      case "topLeft": self = [.top, .left]
+      case "topRight": self = [.top, .right]
+      case "bottomLeft": self = [.bottom, .left]
+      case "bottomRight": self = [.bottom, .right]
+      default: return nil
+      }
+    }
+  }
 
   private weak var flutterViewController: FlutterViewController?
   private var windowChannel: FlutterMethodChannel?
   private var isOverlayMode = false
   private var isExpanded = false
+  private var currentExpandDirection: ExpandDirection = .below
+  private var persistedExpandedSize: NSSize?
   private var collapsedOrigin: NSPoint?
   private var lastProgrammaticExpandedOrigin: NSPoint?
   private var didMoveWhileExpanded = false
@@ -21,6 +58,10 @@ class MainFlutterWindow: NSWindow {
   private var pendingDragEvent: NSEvent?
   private var pendingDragStartScreenPoint: NSPoint?
   private var isNativeDragging = false
+  private var activeResizeEdges: ResizeEdges = []
+  private var resizeStartScreenPoint: NSPoint?
+  private var resizeStartFrame: NSRect?
+  private var isShowingResizeCursor = false
   private var localObservers: [NSObjectProtocol] = []
   private var workspaceObservers: [NSObjectProtocol] = []
   private var distributedObservers: [NSObjectProtocol] = []
@@ -34,6 +75,7 @@ class MainFlutterWindow: NSWindow {
     self.contentViewController = flutterViewController
 
     configureMainWindow(centerWindow: true)
+    loadPersistedExpandedSize()
     registerWindowChannel(messenger: flutterViewController.engine.binaryMessenger)
     installEventMonitorsAndObservers()
 
@@ -72,11 +114,16 @@ class MainFlutterWindow: NSWindow {
 
   private func configureMainWindow(centerWindow: Bool) {
     isOverlayMode = false
+    currentExpandDirection = .below
     lastProgrammaticExpandedOrigin = nil
     didMoveWhileExpanded = false
     pendingDragEvent = nil
     pendingDragStartScreenPoint = nil
     isNativeDragging = false
+    activeResizeEdges = []
+    resizeStartScreenPoint = nil
+    resizeStartFrame = nil
+    resetResizeCursorIfNeeded()
     styleMask = [.titled, .closable, .miniaturizable, .resizable]
     title = "Discord Orb"
     isOpaque = true
@@ -97,6 +144,7 @@ class MainFlutterWindow: NSWindow {
 
   private func configureOverlayWindow() {
     isOverlayMode = true
+    acceptsMouseMovedEvents = true
     styleMask = [.borderless]
     isOpaque = false
     backgroundColor = .clear
@@ -162,7 +210,7 @@ class MainFlutterWindow: NSWindow {
         object: self,
         queue: .main
       ) { [weak self] _ in
-        guard let self = self, self.isExpanded, self.isOverlayMode else { return }
+        guard let self = self, self.isExpanded, self.isOverlayMode, self.activeResizeEdges.isEmpty else { return }
         self.notifyPanelDismissRequested()
       }
     )
@@ -172,7 +220,7 @@ class MainFlutterWindow: NSWindow {
         object: NSApp,
         queue: .main
       ) { [weak self] _ in
-        guard let self = self, self.isExpanded, self.isOverlayMode else { return }
+        guard let self = self, self.isExpanded, self.isOverlayMode, self.activeResizeEdges.isEmpty else { return }
         self.notifyPanelDismissRequested()
       }
     )
@@ -222,8 +270,8 @@ class MainFlutterWindow: NSWindow {
         )
         return
       }
-      expandPanelWindow(size: NSSize(width: width, height: height))
-      result(nil)
+      let direction = expandPanelWindow(size: NSSize(width: width, height: height))
+      result(direction.rawValue)
     case "moveOrb":
       guard let args = call.arguments as? [String: Any],
             let dx = (args["dx"] as? NSNumber)?.doubleValue,
@@ -244,6 +292,21 @@ class MainFlutterWindow: NSWindow {
     case "startOrbDrag":
       startOrbDragFromChannel()
       result(nil)
+    case "startPanelResize":
+      guard let args = call.arguments as? [String: Any],
+            let edgeName = args["edge"] as? String,
+            let edges = ResizeEdges(wireName: edgeName) else {
+        result(
+          FlutterError(
+            code: "invalid_arguments",
+            message: "startPanelResize requires a valid edge name",
+            details: nil
+          )
+        )
+        return
+      }
+      result(nil)
+      startNativePanelResize(edges: edges)
     case "showMainWindow":
       showMainWindow()
       result(nil)
@@ -279,18 +342,40 @@ class MainFlutterWindow: NSWindow {
     let targetFrame = clampFrameToVisibleScreen(NSRect(origin: origin, size: targetSize))
 
     collapsedOrigin = targetFrame.origin
+    currentExpandDirection = .below
     lastProgrammaticExpandedOrigin = nil
     didMoveWhileExpanded = false
     isExpanded = false
+    activeResizeEdges = []
+    resizeStartScreenPoint = nil
+    resizeStartFrame = nil
+    resetResizeCursorIfNeeded()
     setFrame(targetFrame, display: true, animate: false)
     invalidateShadow()
     orderFrontRegardless()
   }
 
-  private func expandPanelWindow(size: NSSize) {
+  private func clampExpandedSize(_ size: NSSize) -> NSSize {
+    let clampedWidth = min(max(size.width, Self.minExpandedSize.width), Self.maxExpandedSize.width)
+    let clampedHeight = min(max(size.height, Self.minExpandedSize.height), Self.maxExpandedSize.height)
+    if let visible = activeVisibleFrame() {
+      return NSSize(
+        width: min(clampedWidth, visible.width),
+        height: min(clampedHeight, visible.height)
+      )
+    }
+    return NSSize(width: clampedWidth, height: clampedHeight)
+  }
+
+  private func expandPanelWindow(size: NSSize) -> ExpandDirection {
     configureOverlayWindow()
     pendingDragEvent = nil
     pendingDragStartScreenPoint = nil
+    activeResizeEdges = []
+    resizeStartScreenPoint = nil
+    resizeStartFrame = nil
+    resetResizeCursorIfNeeded()
+
     if !isExpanded {
       if frame.size == Self.collapsedOrbSize {
         collapsedOrigin = frame.origin
@@ -299,15 +384,36 @@ class MainFlutterWindow: NSWindow {
       }
     }
 
+    let targetSize = clampExpandedSize(persistedExpandedSize ?? size)
     let anchorOrigin = collapsedOrigin ?? defaultCollapsedOrigin(for: Self.collapsedOrbSize)
+
+    let direction: ExpandDirection
+    if let visible = activeVisibleFrame() {
+      let spaceBelow = (anchorOrigin.y + Self.collapsedOrbSize.height) - visible.minY
+      let spaceAbove = visible.maxY - anchorOrigin.y
+      if spaceBelow >= targetSize.height {
+        direction = .below
+      } else if spaceAbove > spaceBelow {
+        direction = .above
+      } else {
+        direction = .below
+      }
+    } else {
+      direction = .below
+    }
+
+    let desiredY = direction == .above
+      ? anchorOrigin.y
+      : anchorOrigin.y + Self.collapsedOrbSize.height - targetSize.height
     let desiredFrame = NSRect(
-      x: anchorOrigin.x + Self.collapsedOrbSize.width - size.width,
-      y: anchorOrigin.y + Self.collapsedOrbSize.height - size.height,
-      width: size.width,
-      height: size.height
+      x: anchorOrigin.x + Self.collapsedOrbSize.width - targetSize.width,
+      y: desiredY,
+      width: targetSize.width,
+      height: targetSize.height
     )
     let clampedFrame = clampFrameToVisibleScreen(desiredFrame)
 
+    currentExpandDirection = direction
     isExpanded = true
     didMoveWhileExpanded = false
     lastProgrammaticExpandedOrigin = clampedFrame.origin
@@ -315,6 +421,7 @@ class MainFlutterWindow: NSWindow {
     invalidateShadow()
     NSApp.activate(ignoringOtherApps: true)
     makeKeyAndOrderFront(nil)
+    return direction
   }
 
   private func moveOrbWindow(dx: CGFloat, dy: CGFloat) {
@@ -339,19 +446,181 @@ class MainFlutterWindow: NSWindow {
     }
     let width = frame.width
     let height = frame.height
-    return pointInWindow.x >= width - Self.collapsedOrbSize.width &&
-      pointInWindow.x <= width &&
-      pointInWindow.y >= height - Self.collapsedOrbSize.height &&
+    let inRightBand = pointInWindow.x >= width - Self.collapsedOrbSize.width &&
+      pointInWindow.x <= width
+    guard inRightBand else {
+      return false
+    }
+    if currentExpandDirection == .above {
+      return pointInWindow.y >= 0 && pointInWindow.y <= Self.collapsedOrbSize.height
+    }
+    return pointInWindow.y >= height - Self.collapsedOrbSize.height &&
       pointInWindow.y <= height
+  }
+
+  private func loadPersistedExpandedSize() {
+    let defaults = UserDefaults.standard
+    let width = defaults.double(forKey: Self.persistedWidthDefaultsKey)
+    let height = defaults.double(forKey: Self.persistedHeightDefaultsKey)
+    if width >= Self.minExpandedSize.width && height >= Self.minExpandedSize.height {
+      persistedExpandedSize = clampExpandedSize(NSSize(width: width, height: height))
+    }
+  }
+
+  private func savePersistedExpandedSize(_ size: NSSize) {
+    let clamped = clampExpandedSize(size)
+    persistedExpandedSize = clamped
+    let defaults = UserDefaults.standard
+    defaults.set(Double(clamped.width), forKey: Self.persistedWidthDefaultsKey)
+    defaults.set(Double(clamped.height), forKey: Self.persistedHeightDefaultsKey)
+  }
+
+  private func updateCursor(for edges: ResizeEdges) {
+    if edges.isEmpty {
+      resetResizeCursorIfNeeded()
+      return
+    }
+    let hasHorizontal = edges.contains(.left) || edges.contains(.right)
+    let hasVertical = edges.contains(.top) || edges.contains(.bottom)
+    if hasHorizontal && hasVertical {
+      NSCursor.crosshair.set()
+    } else if hasHorizontal {
+      NSCursor.resizeLeftRight.set()
+    } else {
+      NSCursor.resizeUpDown.set()
+    }
+    isShowingResizeCursor = true
+  }
+
+  private func resetResizeCursorIfNeeded() {
+    guard isShowingResizeCursor else { return }
+    NSCursor.arrow.set()
+    isShowingResizeCursor = false
+  }
+
+  private func startNativePanelResize(edges: ResizeEdges) {
+    guard isOverlayMode, isExpanded, !edges.isEmpty, activeResizeEdges.isEmpty, !isNativeDragging else {
+      return
+    }
+    // Only enter modal tracking if the primary mouse button is still pressed.
+    guard (NSEvent.pressedMouseButtons & 1) != 0 else {
+      return
+    }
+
+    pendingDragEvent = nil
+    pendingDragStartScreenPoint = nil
+    activeResizeEdges = edges
+    resizeStartScreenPoint = NSEvent.mouseLocation
+    resizeStartFrame = frame
+    updateCursor(for: edges)
+
+    // Release Flutter pointer state before blocking inside AppKit event tracking.
+    sendSyntheticMouseUpOutsideWindow()
+
+    while true {
+      guard let nextEvent = NSApp.nextEvent(
+        matching: [.leftMouseDragged, .leftMouseUp],
+        until: .distantFuture,
+        inMode: .eventTracking,
+        dequeue: true
+      ) else {
+        break
+      }
+      if nextEvent.type == .leftMouseUp {
+        break
+      }
+      applyResize(to: NSEvent.mouseLocation)
+    }
+
+    activeResizeEdges = []
+    resizeStartScreenPoint = nil
+    resizeStartFrame = nil
+    resetResizeCursorIfNeeded()
+    sendSyntheticMouseUpOutsideWindow()
+  }
+
+  private func applyResize(to currentScreenPoint: NSPoint) {
+    guard !activeResizeEdges.isEmpty,
+          let startPoint = resizeStartScreenPoint,
+          let startFrame = resizeStartFrame else {
+      return
+    }
+
+    let dx = currentScreenPoint.x - startPoint.x
+    let dy = currentScreenPoint.y - startPoint.y
+    let visible = activeVisibleFrame()
+
+    let minW = Self.minExpandedSize.width
+    let maxW = visible.map { min(Self.maxExpandedSize.width, $0.width) } ?? Self.maxExpandedSize.width
+    let minH = Self.minExpandedSize.height
+    let maxH = visible.map { min(Self.maxExpandedSize.height, $0.height) } ?? Self.maxExpandedSize.height
+
+    var newX = startFrame.origin.x
+    var newY = startFrame.origin.y
+    var newWidth = startFrame.width
+    var newHeight = startFrame.height
+
+    if activeResizeEdges.contains(.left) {
+      let anchorRight = startFrame.maxX
+      var width = min(max(startFrame.width - dx, minW), maxW)
+      if let visible = visible {
+        width = min(width, anchorRight - visible.minX)
+      }
+      width = max(width, minW)
+      newWidth = width
+      newX = anchorRight - width
+    } else if activeResizeEdges.contains(.right) {
+      let anchorLeft = startFrame.minX
+      var width = min(max(startFrame.width + dx, minW), maxW)
+      if let visible = visible {
+        width = min(width, visible.maxX - anchorLeft)
+      }
+      width = max(width, minW)
+      newWidth = width
+      newX = anchorLeft
+    }
+
+    if activeResizeEdges.contains(.bottom) {
+      let anchorTop = startFrame.maxY
+      var height = min(max(startFrame.height - dy, minH), maxH)
+      if let visible = visible {
+        height = min(height, anchorTop - visible.minY)
+      }
+      height = max(height, minH)
+      newHeight = height
+      newY = anchorTop - height
+    } else if activeResizeEdges.contains(.top) {
+      let anchorBottom = startFrame.minY
+      var height = min(max(startFrame.height + dy, minH), maxH)
+      if let visible = visible {
+        height = min(height, visible.maxY - anchorBottom)
+      }
+      height = max(height, minH)
+      newHeight = height
+      newY = anchorBottom
+    }
+
+    let nextFrame = clampFrameToVisibleScreen(
+      NSRect(x: newX, y: newY, width: newWidth, height: newHeight)
+    )
+    setFrame(nextFrame, display: true, animate: false)
+    invalidateShadow()
+    savePersistedExpandedSize(nextFrame.size)
+    lastProgrammaticExpandedOrigin = nil
+    didMoveWhileExpanded = true
+    syncCollapsedOriginFromCurrentFrame()
   }
 
   private func syncCollapsedOriginFromCurrentFrame() {
     guard isOverlayMode else { return }
     let rawOrigin: NSPoint
     if isExpanded {
+      let y = currentExpandDirection == .above
+        ? frame.minY
+        : frame.maxY - Self.collapsedOrbSize.height
       rawOrigin = NSPoint(
         x: frame.maxX - Self.collapsedOrbSize.width,
-        y: frame.maxY - Self.collapsedOrbSize.height
+        y: y
       )
     } else {
       rawOrigin = frame.origin
@@ -363,6 +632,10 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
+    guard activeResizeEdges.isEmpty else {
+      return event
+    }
+
     guard isOverlayMode, event.window === self else {
       if event.type == .leftMouseUp {
         pendingDragEvent = nil

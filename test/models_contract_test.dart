@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:discord_orb/app.dart';
 import 'package:discord_orb/contracts/auth_repository.dart';
 import 'package:discord_orb/contracts/orb_window_controller.dart';
+import 'package:discord_orb/core/device_identity_store.dart';
 import 'package:discord_orb/models/channel_models.dart';
 import 'package:discord_orb/models/message_models.dart';
 import 'package:discord_orb/models/orb_error.dart';
@@ -129,7 +130,6 @@ void main() {
       final decoded = ChannelMessagePreview.fromJson(message.toJson());
       expect(decoded, message);
       expect(decoded.hashCode, message.hashCode);
-
       // Nullable / absent author_avatar_url and guild_icon_url remain backward-compatible.
       final withoutAvatar = ChannelMessagePreview.fromJson(<String, dynamic>{
         'id': 'm-2',
@@ -176,6 +176,86 @@ void main() {
       );
       expect(merged.single.content, 'Edited');
       expect(merged.single.authorAvatarUrl, message.authorAvatarUrl);
+    });
+
+    test('parses optional authorAvatarUrl and guildIconUrl with null compatibility',
+        () {
+      final msgSnake = ChannelMessagePreview.fromJson(<String, dynamic>{
+        'id': 'm-2',
+        'author_name': 'Alice',
+        'author_avatar_url': 'https://cdn.example.com/avatars/alice.png',
+        'timestamp': '2026-11-19T10:30:00Z',
+        'content': 'Hi',
+      });
+      expect(
+        msgSnake.authorAvatarUrl,
+        'https://cdn.example.com/avatars/alice.png',
+      );
+      expect(
+        ChannelMessagePreview.fromJson(msgSnake.toJson()),
+        msgSnake,
+      );
+
+      final msgCamel = ChannelMessagePreview.fromJson(<String, dynamic>{
+        'id': 'm-3',
+        'authorName': 'Bob',
+        'authorAvatarUrl': 'https://cdn.example.com/avatars/bob.png',
+        'timestamp': '2026-11-19T10:31:00Z',
+        'content': 'Hey',
+      });
+      expect(
+        msgCamel.authorAvatarUrl,
+        'https://cdn.example.com/avatars/bob.png',
+      );
+
+      final guildWithIcon = EligibleGuild.fromJson(<String, dynamic>{
+        'guild_id': 'g-1',
+        'guild_name': 'Orb Guild',
+        'guild_icon_url': 'https://cdn.example.com/icons/g1.png',
+        'channels': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'channel_id': 'c-1',
+            'channel_name': 'general',
+          },
+        ],
+      });
+      expect(
+        guildWithIcon.guildIconUrl,
+        'https://cdn.example.com/icons/g1.png',
+      );
+      expect(
+        guildWithIcon.channels.first.guildIconUrl,
+        'https://cdn.example.com/icons/g1.png',
+      );
+      expect(
+        EligibleGuild.fromJson(guildWithIcon.toJson()),
+        guildWithIcon,
+      );
+
+      final guildWithoutIcon = EligibleGuild.fromJson(<String, dynamic>{
+        'guild_id': 'g-2',
+        'guild_name': 'Plain Guild',
+        'channels': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'channel_id': 'c-2',
+            'channel_name': 'random',
+          },
+        ],
+      });
+      expect(guildWithoutIcon.guildIconUrl, isNull);
+      expect(guildWithoutIcon.channels.first.guildIconUrl, isNull);
+    });
+
+    test('ChatListLayout persists and restores via DeviceIdentityStore',
+        () async {
+      final store = InMemorySecureKeyValueStore();
+      final identityStore = DeviceIdentityStore(store: store);
+
+      expect(await identityStore.readChatListLayout(), ChatListLayout.standard);
+      await identityStore.saveChatListLayout(ChatListLayout.compact);
+      expect(await identityStore.readChatListLayout(), ChatListLayout.compact);
+      await identityStore.saveChatListLayout(ChatListLayout.standard);
+      expect(await identityStore.readChatListLayout(), ChatListLayout.standard);
     });
   });
 
@@ -242,6 +322,7 @@ void main() {
       await controller.collapsePanel();
       await controller.hideOrb();
       await controller.startOrbDrag();
+      await controller.startPanelResize(PanelResizeEdge.left);
       await controller.moveOrbBy(const Offset(4, 8));
       await controller.showMainWindow();
 

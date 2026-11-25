@@ -1,4 +1,8 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../contracts/auth_repository.dart';
 import '../../models/orb_error.dart';
@@ -11,11 +15,17 @@ class SignInScreen extends StatefulWidget {
     required this.authRepository,
     required this.onSignedIn,
     required this.onChangeBackend,
+    this.platform,
+    this.clipboardWriter,
   });
+
+  static const Key copyLinkButtonKey = Key('sign_in_copy_link_button');
 
   final AuthRepository authRepository;
   final ValueChanged<OrbSessionTokens> onSignedIn;
   final VoidCallback onChangeBackend;
+  final OrbPlatform? platform;
+  final Future<void> Function(String text)? clipboardWriter;
 
   @override
   State<SignInScreen> createState() => _SignInScreenState();
@@ -26,34 +36,102 @@ class _SignInScreenState extends State<SignInScreen> {
   bool _isCancelling = false;
   int _attemptGeneration = 0;
   String? _errorMessage;
+  Uri? _activeAuthorizationUri;
 
-  Future<void> _startSignIn() async {
+  bool get _isDesktopPlatform {
+    final resolved = widget.platform ??
+        switch (defaultTargetPlatform) {
+          TargetPlatform.android => OrbPlatform.android,
+          TargetPlatform.windows => OrbPlatform.windows,
+          _ => OrbPlatform.macos,
+        };
+    return resolved != OrbPlatform.android;
+  }
+
+  Future<void> _copyUriToClipboard(Uri uri, int generation) async {
+    try {
+      final writer = widget.clipboardWriter ??
+          (String text) => Clipboard.setData(ClipboardData(text: text));
+      await writer(uri.toString());
+      if (!mounted || generation != _attemptGeneration) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.hideCurrentSnackBar();
+      messenger?.showSnackBar(
+        const SnackBar(
+          content: Text('인증 링크를 복사했습니다. 원하는 브라우저에 붙여넣어 진행하세요.'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    } catch (error) {
+      if (!mounted || generation != _attemptGeneration) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.hideCurrentSnackBar();
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text('링크 복사에 실패했습니다: $error'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  Future<void> _startSignIn({
+    bool launchBrowser = true,
+    bool copyWhenReady = false,
+  }) async {
     final generation = ++_attemptGeneration;
     setState(() {
       _isSigningIn = true;
       _isCancelling = false;
       _errorMessage = null;
+      _activeAuthorizationUri = null;
     });
 
     try {
-      final tokens = await widget.authRepository.signInWithDiscord();
+      final tokens = await widget.authRepository.signInWithDiscord(
+        launchBrowser: launchBrowser,
+        onAuthorizationUriReady: (Uri authorizationUri) {
+          if (!mounted || generation != _attemptGeneration) return;
+          setState(() {
+            _activeAuthorizationUri = authorizationUri;
+          });
+          if (copyWhenReady) {
+            unawaited(_copyUriToClipboard(authorizationUri, generation));
+          }
+        },
+      );
       if (!mounted || generation != _attemptGeneration) return;
       setState(() {
         _isSigningIn = false;
+        _activeAuthorizationUri = null;
       });
       widget.onSignedIn(tokens);
     } on OrbException catch (error) {
       if (!mounted || generation != _attemptGeneration) return;
       setState(() {
         _isSigningIn = false;
+        _activeAuthorizationUri = null;
         _errorMessage = error.message;
       });
     } catch (error) {
       if (!mounted || generation != _attemptGeneration) return;
       setState(() {
         _isSigningIn = false;
+        _activeAuthorizationUri = null;
         _errorMessage = 'Sign-in failed: $error';
       });
+    }
+  }
+
+  Future<void> _handleCopyLinkPressed() async {
+    if (_isCancelling) return;
+    final activeUri = _activeAuthorizationUri;
+    if (_isSigningIn && activeUri != null) {
+      await _copyUriToClipboard(activeUri, _attemptGeneration);
+      return;
+    }
+    if (!_isSigningIn) {
+      await _startSignIn(launchBrowser: false, copyWhenReady: true);
     }
   }
 
@@ -61,6 +139,7 @@ class _SignInScreenState extends State<SignInScreen> {
     _attemptGeneration++;
     setState(() {
       _isCancelling = true;
+      _activeAuthorizationUri = null;
     });
     try {
       await widget.authRepository.cancelPendingSignIn();
@@ -69,6 +148,7 @@ class _SignInScreenState extends State<SignInScreen> {
         setState(() {
           _isSigningIn = false;
           _isCancelling = false;
+          _activeAuthorizationUri = null;
           _errorMessage = null;
         });
       }
@@ -168,6 +248,14 @@ class _SignInScreenState extends State<SignInScreen> {
                     icon: const Icon(Icons.close),
                     label: const Text('Cancel Sign-In'),
                   ),
+                  if (_isDesktopPlatform && _activeAuthorizationUri != null) ...<Widget>[
+                    const SizedBox(height: 8),
+                    TextButton(
+                      key: SignInScreen.copyLinkButtonKey,
+                      onPressed: _isCancelling ? null : _handleCopyLinkPressed,
+                      child: const Text('링크 복사'),
+                    ),
+                  ],
                 ] else ...<Widget>[
                   if (_errorMessage != null) ...<Widget>[
                     const SizedBox(height: 20),
@@ -201,7 +289,7 @@ class _SignInScreenState extends State<SignInScreen> {
                   const SizedBox(height: 24),
                   FilledButton.icon(
                     key: const Key('sign_in_start_button'),
-                    onPressed: _startSignIn,
+                    onPressed: () => unawaited(_startSignIn()),
                     icon: Icon(
                       _errorMessage != null
                           ? Icons.refresh
@@ -213,6 +301,14 @@ class _SignInScreenState extends State<SignInScreen> {
                           : 'Sign in with Discord',
                     ),
                   ),
+                  if (_isDesktopPlatform) ...<Widget>[
+                    const SizedBox(height: 8),
+                    TextButton(
+                      key: SignInScreen.copyLinkButtonKey,
+                      onPressed: () => unawaited(_handleCopyLinkPressed()),
+                      child: const Text('링크 복사'),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   TextButton(
                     key: const Key('sign_in_change_backend_button'),

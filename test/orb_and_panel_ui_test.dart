@@ -5,6 +5,7 @@ import 'package:discord_orb/contracts/preview_repository.dart';
 import 'package:discord_orb/models/channel_models.dart';
 import 'package:discord_orb/models/message_models.dart';
 import 'package:discord_orb/models/orb_error.dart';
+import 'package:discord_orb/ui/common/orb_avatar.dart';
 import 'package:discord_orb/ui/orb/orb_button.dart';
 import 'package:discord_orb/ui/orb/orb_shell.dart';
 import 'package:discord_orb/ui/orb/panel_positioner.dart';
@@ -15,10 +16,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _RecordingWindowController extends NoopOrbWindowController {
-  _RecordingWindowController({this.usesNativeWindowDrag = false});
+  _RecordingWindowController({
+    this.usesNativeWindowDrag = false,
+    this.expandDirection = OrbPanelExpandDirection.below,
+  });
 
   @override
   final bool usesNativeWindowDrag;
+
+  OrbPanelExpandDirection expandDirection;
 
   int expandCount = 0;
   Size? lastExpandSize;
@@ -26,13 +32,15 @@ class _RecordingWindowController extends NoopOrbWindowController {
   int hideOrbCount = 0;
   int showCollapsedOrbCount = 0;
   int startOrbDragCount = 0;
+  final List<PanelResizeEdge> startedResizeEdges = <PanelResizeEdge>[];
   final List<Offset> moveOrbDeltas = <Offset>[];
   int showMainWindowCount = 0;
 
   @override
-  Future<void> expandPanel(Size size) async {
+  Future<OrbPanelExpandDirection> expandPanel(Size size) async {
     expandCount += 1;
     lastExpandSize = size;
+    return expandDirection;
   }
 
   @override
@@ -53,6 +61,11 @@ class _RecordingWindowController extends NoopOrbWindowController {
   @override
   Future<void> startOrbDrag() async {
     startOrbDragCount += 1;
+  }
+
+  @override
+  Future<void> startPanelResize(PanelResizeEdge edge) async {
+    startedResizeEdges.add(edge);
   }
 
   @override
@@ -178,6 +191,10 @@ Widget _wrapShell({
   String? channelId = 'channel-1',
   Duration streamReconnectBaseDelay = const Duration(seconds: 1),
   Duration streamReconnectMaxDelay = const Duration(seconds: 30),
+  String? guildIconUrl,
+  ChatListLayout chatListLayout = ChatListLayout.standard,
+  ValueChanged<ChatListLayout>? onChatListLayoutChanged,
+  ValueChanged<OrbPanelExpandDirection>? onExpandDirectionChanged,
   VoidCallback? onReauthenticate,
   VoidCallback? onReselectChannel,
 }) {
@@ -195,6 +212,10 @@ Widget _wrapShell({
             channelId: channelId,
             channelName: 'general',
             guildName: 'Orb Guild',
+            guildIconUrl: guildIconUrl,
+            chatListLayout: chatListLayout,
+            onChatListLayoutChanged: onChatListLayoutChanged,
+            onExpandDirectionChanged: onExpandDirectionChanged,
             initialOrbOffset: initialOrbOffset,
             streamReconnectBaseDelay: streamReconnectBaseDelay,
             streamReconnectMaxDelay: streamReconnectMaxDelay,
@@ -592,6 +613,299 @@ void main() {
             matching: find.byType(Tooltip),
           ),
           findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'native expanded window adapts responsively to resized viewports (min 260x240 and large 600x700) without overflow',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController(usesNativeWindowDrag: true);
+        final controller = OrbShellController();
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1), _msg(2)];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: const Size(352, 576),
+          ),
+        );
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+
+        final initialRect = tester.getRect(find.byType(MessagePanel));
+        expect(initialRect.width, closeTo(320, 1));
+
+        // Resize larger -> MessagePanel expands to fill resized viewport.
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: const Size(600, 700),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final largerRect = tester.getRect(find.byType(MessagePanel));
+        expect(largerRect.width, closeTo(568, 1));
+        expect(largerRect.height, greaterThan(initialRect.height));
+        expect(tester.takeException(), isNull);
+
+        // Resize down to minimum 260x240 -> still renders cleanly without overflow.
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: const Size(260, 240),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final minRect = tester.getRect(find.byType(MessagePanel));
+        expect(minRect.width, closeTo(228, 1));
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'upward (above) expansion anchors native orb at bottom-right and renders MessagePanel strictly above orb',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController(
+          usesNativeWindowDrag: true,
+          expandDirection: OrbPanelExpandDirection.above,
+        );
+        final controller = OrbShellController();
+        OrbPanelExpandDirection? reportedDirection;
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1)];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: const Size(352, 576),
+            onExpandDirectionChanged: (dir) => reportedDirection = dir,
+          ),
+        );
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+
+        expect(controller.expandDirection, OrbPanelExpandDirection.above);
+        expect(reportedDirection, OrbPanelExpandDirection.above);
+
+        final shellTopLeft = tester.getTopLeft(find.byType(OrbShell));
+        final orbRect = tester.getRect(find.byKey(OrbButton.orbButtonKey));
+        final panelRect = tester.getRect(find.byType(MessagePanel));
+
+        // Orb is anchored at bottom-right (352 - 56 - 16 = 280, 576 - 56 - 16 = 504).
+        expect(orbRect.topLeft - shellTopLeft, const Offset(280, 504));
+        expect(panelRect.bottom, lessThanOrEqualTo(orbRect.top));
+        expect(orbRect.overlaps(panelRect), isFalse);
+      },
+    );
+
+    testWidgets(
+      'non-native OrbShell resize handle dynamically resizes MessagePanel within bounds',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController(usesNativeWindowDrag: false);
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1)];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            viewportSize: const Size(640, 720),
+            initialOrbOffset: const Offset(40, 20),
+          ),
+        );
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+
+        final before = tester.getRect(find.byType(MessagePanel));
+        expect(find.byKey(OrbShell.panelResizeHandleKey), findsOneWidget);
+
+        await tester.drag(
+          find.byKey(OrbShell.panelResizeHandleKey),
+          const Offset(80, 60),
+        );
+        await tester.pump();
+
+        final after = tester.getRect(find.byType(MessagePanel));
+        expect(after.width, greaterThan(before.width));
+        expect(after.height, greaterThan(before.height));
+      },
+    );
+
+    testWidgets(
+      'MessagePanel header toggles standard vs compact layout and renders avatars & guild icon fallback',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController();
+        ChatListLayout? lastChanged;
+        repo.onFetch = (_) async => <ChannelMessagePreview>[
+              ChannelMessagePreview(
+                id: 'm-1',
+                authorName: 'Alice Wonderland',
+                timestamp: DateTime.utc(2026, 11, 19, 12, 0),
+                content: 'Line one\nLine two',
+              ),
+            ];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            onChatListLayoutChanged: (layout) => lastChanged = layout,
+          ),
+        );
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+
+        // Standard layout shows multi-line content and avatars (guild + author).
+        expect(find.text('Line one\nLine two'), findsOneWidget);
+        expect(find.byType(OrbAvatar), findsNWidgets(2));
+        expect(find.text('OG'), findsOneWidget); // Orb Guild initials
+        expect(find.text('AW'), findsOneWidget); // Alice Wonderland initials
+
+        // Tap header layout toggle -> switches to compact single-line layout.
+        await tester.tap(find.byKey(MessagePanel.layoutToggleButtonKey));
+        await tester.pumpAndSettle();
+
+        expect(lastChanged, ChatListLayout.compact);
+        expect(find.text('Line one Line two'), findsOneWidget);
+        expect(find.text('Line one\nLine two'), findsNothing);
+        final authorAvatar = tester.widgetList<OrbAvatar>(
+          find.descendant(
+            of: find.byType(MessageTile),
+            matching: find.byType(OrbAvatar),
+          ),
+        );
+        expect(authorAvatar.single.size, 18);
+      },
+    );
+
+    testWidgets(
+      'native desktop expanded panel renders visible corner resize grips, hover cursors, and invokes startPanelResize on visible card edges for both below and above modes',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController(
+          usesNativeWindowDrag: true,
+          expandDirection: OrbPanelExpandDirection.below,
+        );
+        final controller = OrbShellController();
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1)];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: const Size(352, 576),
+          ),
+        );
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+
+        // Below mode: bottom-left and bottom-right grips are visible; top-left is hidden.
+        expect(
+          find.byKey(OrbShell.panelResizeGripKey(PanelResizeEdge.bottomRight)),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(OrbShell.panelResizeGripKey(PanelResizeEdge.bottomLeft)),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(OrbShell.panelResizeGripKey(PanelResizeEdge.topLeft)),
+          findsNothing,
+        );
+
+        // Verify hover MouseRegion cursor on visible bottom-left and left edges.
+        final bottomLeftMouseRegion = tester.widget<MouseRegion>(
+          find.ancestor(
+            of: find.byKey(OrbShell.panelResizeEdgeKey(PanelResizeEdge.bottomLeft)),
+            matching: find.byType(MouseRegion),
+          ).first,
+        );
+        expect(
+          bottomLeftMouseRegion.cursor,
+          SystemMouseCursors.resizeUpRightDownLeft,
+        );
+
+        // Pointer down on visible card edges triggers startPanelResize with matching edge.
+        await tester.tap(
+          find.byKey(OrbShell.panelResizeEdgeKey(PanelResizeEdge.bottomLeft)),
+        );
+        await tester.tap(
+          find.byKey(OrbShell.panelResizeEdgeKey(PanelResizeEdge.left)),
+        );
+        await tester.tap(
+          find.byKey(OrbShell.panelResizeEdgeKey(PanelResizeEdge.bottomRight)),
+        );
+        await tester.pump();
+        expect(
+          window.startedResizeEdges,
+          <PanelResizeEdge>[
+            PanelResizeEdge.bottomLeft,
+            PanelResizeEdge.left,
+            PanelResizeEdge.bottomRight,
+          ],
+        );
+
+        // Close and re-open in above mode -> top-left visible grip appears.
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+        window.expandDirection = OrbPanelExpandDirection.above;
+        window.startedResizeEdges.clear();
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(OrbShell.panelResizeGripKey(PanelResizeEdge.topLeft)),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(OrbShell.panelResizeGripKey(PanelResizeEdge.bottomRight)),
+          findsNothing,
+        );
+
+        final topLeftMouseRegion = tester.widget<MouseRegion>(
+          find.ancestor(
+            of: find.byKey(OrbShell.panelResizeEdgeKey(PanelResizeEdge.topLeft)),
+            matching: find.byType(MouseRegion),
+          ).first,
+        );
+        expect(
+          topLeftMouseRegion.cursor,
+          SystemMouseCursors.resizeUpLeftDownRight,
+        );
+
+        await tester.tap(
+          find.byKey(OrbShell.panelResizeEdgeKey(PanelResizeEdge.topLeft)),
+        );
+        await tester.tap(
+          find.byKey(OrbShell.panelResizeEdgeKey(PanelResizeEdge.top)),
+        );
+        await tester.pump();
+        expect(
+          window.startedResizeEdges,
+          <PanelResizeEdge>[
+            PanelResizeEdge.topLeft,
+            PanelResizeEdge.top,
+          ],
         );
       },
     );

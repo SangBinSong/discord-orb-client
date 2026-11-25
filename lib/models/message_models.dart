@@ -1,5 +1,20 @@
 import 'dart:convert';
 
+/// Density layout mode for displaying messages inside the Discord Orb panel.
+enum ChatListLayout {
+  standard,
+  compact;
+
+  String get storageValue => name;
+
+  static ChatListLayout fromStorageValue(String? raw) {
+    return switch (raw?.trim().toLowerCase()) {
+      'compact' => ChatListLayout.compact,
+      _ => ChatListLayout.standard,
+    };
+  }
+}
+
 /// Text-only message preview item displayed inside the Discord Orb panel.
 class ChannelMessagePreview {
   const ChannelMessagePreview({
@@ -35,10 +50,14 @@ class ChannelMessagePreview {
   factory ChannelMessagePreview.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String?;
     final authorName = (json['author_name'] ?? json['authorName']) as String?;
-    final authorAvatarUrl =
-        (json['author_avatar_url'] ?? json['authorAvatarUrl']) as String?;
     final timestampRaw = json['timestamp'] as String?;
     final content = json['content'] as String?;
+    final avatarRaw =
+        (json['author_avatar_url'] ?? json['authorAvatarUrl']) as String?;
+    final authorAvatarUrl =
+        (avatarRaw != null && avatarRaw.trim().isNotEmpty)
+            ? avatarRaw.trim()
+            : null;
 
     if (id == null ||
         authorName == null ||

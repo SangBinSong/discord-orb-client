@@ -41,7 +41,7 @@ class AndroidOrbWindowController implements OrbWindowController {
   }
 
   @override
-  Future<void> expandPanel(Size size) {
+  Future<OrbPanelExpandDirection> expandPanel(Size size) async {
     if (!size.width.isFinite ||
         !size.height.isFinite ||
         size.width <= 0 ||
@@ -52,13 +52,14 @@ class AndroidOrbWindowController implements OrbWindowController {
         'Panel size must have positive finite dimensions',
       );
     }
-    return _channel.invokeMethod<void>(
+    final result = await _channel.invokeMethod<dynamic>(
       'expandPanel',
       <String, double>{
         'width': size.width,
         'height': size.height,
       },
     );
+    return OrbPanelExpandDirection.fromWireValue(result);
   }
 
   @override
@@ -73,6 +74,9 @@ class AndroidOrbWindowController implements OrbWindowController {
 
   @override
   Future<void> startOrbDrag() async {}
+
+  @override
+  Future<void> startPanelResize(PanelResizeEdge edge) async {}
 
   @override
   Future<void> moveOrbBy(Offset delta) async {}

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../contracts/preview_repository.dart';
 import '../../models/channel_models.dart';
 import '../../models/orb_error.dart';
+import '../common/orb_avatar.dart';
 
 /// Screen that loads and displays eligible Discord text channels grouped by guild.
 class ChannelSelectScreen extends StatefulWidget {
@@ -270,12 +271,26 @@ class _ChannelSelectScreenState extends State<ChannelSelectScreen> {
           children: <Widget>[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-              child: Text(
-                guild.guildName,
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: colorScheme.primary,
-                  fontWeight: FontWeight.w600,
-                ),
+              child: Row(
+                children: <Widget>[
+                  OrbAvatar(
+                    name: guild.guildName,
+                    imageUrl: guild.guildIconUrl,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      guild.guildName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        color: colorScheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             for (final channel in guild.channels)

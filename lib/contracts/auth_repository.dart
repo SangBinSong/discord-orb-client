@@ -43,7 +43,10 @@ abstract interface class AuthRepository {
 
   Future<BackendHealthStatus> validateAndProbeBackend(String url);
   Future<void> configureBackend(String url, {String? deviceName});
-  Future<OrbSessionTokens> signInWithDiscord();
+  Future<OrbSessionTokens> signInWithDiscord({
+    bool launchBrowser = true,
+    void Function(Uri authorizationUri)? onAuthorizationUriReady,
+  });
   Future<void> cancelPendingSignIn();
   Future<OrbSessionTokens?> loadStoredSession();
   Future<OrbSessionTokens> refreshAccessToken();

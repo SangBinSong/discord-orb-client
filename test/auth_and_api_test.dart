@@ -672,6 +672,83 @@ void main() {
       expect(await identityStore.readSelectedChannel(), isNull);
     });
 
+    test(
+      'desktop signInWithDiscord(launchBrowser: false) emits URI without launching browser and completes on loopback callback',
+      () async {
+        final kvStore = InMemorySecureKeyValueStore();
+        final identityStore = DeviceIdentityStore(
+          store: kvStore,
+          defaultPlatform: OrbPlatform.macos,
+        );
+        final mockHttp = MockClient((http.Request request) async {
+          if (request.url.path == '/api/v1/auth/exchange') {
+            final now = DateTime.now().toUtc();
+            return http.Response(
+              jsonEncode(<String, dynamic>{
+                'access_token': 'manual-link-access',
+                'refresh_token': 'manual-link-refresh',
+                'access_expires_at':
+                    now.add(const Duration(minutes: 15)).toIso8601String(),
+                'session_expires_at':
+                    now.add(const Duration(days: 30)).toIso8601String(),
+              }),
+              200,
+              headers: const <String, String>{
+                'content-type': 'application/json',
+              },
+            );
+          }
+          return http.Response('Not found', 404);
+        });
+        final httpClient = OrbHttpClient(inner: mockHttp);
+        addTearDown(httpClient.close);
+
+        final tokenManager = TokenManager(
+          httpClient: httpClient,
+          identityStore: identityStore,
+        );
+        final browserLauncher = _RecordingBrowserLauncher();
+
+        final authRepo = AuthRepositoryImpl(
+          identityStore: identityStore,
+          httpClient: httpClient,
+          tokenManager: tokenManager,
+          browserLauncher: browserLauncher,
+          platform: OrbPlatform.macos,
+        );
+        await authRepo.configureBackend('https://orb.example.com');
+
+        Uri? emittedUri;
+        final tokens = await authRepo.signInWithDiscord(
+          launchBrowser: false,
+          onAuthorizationUriReady: (Uri loginUri) {
+            emittedUri = loginUri;
+            final redirect = Uri.parse(loginUri.queryParameters['redirect_uri']!);
+            final state = loginUri.queryParameters['state']!;
+            Future<void>.microtask(() async {
+              await _withRealLoopbackHttpClient((rawHttp) async {
+                final req = await rawHttp.getUrl(
+                  redirect.replace(
+                    queryParameters: <String, String>{
+                      'ticket': 'manual-ticket',
+                      'state': state,
+                    },
+                  ),
+                );
+                final resp = await req.close();
+                await resp.drain<void>();
+              });
+            });
+          },
+        );
+
+        expect(emittedUri, isNotNull);
+        expect(emittedUri!.path, '/auth/discord/login');
+        expect(browserLauncher.launchedUris, isEmpty);
+        expect(tokens.accessToken, 'manual-link-access');
+      },
+    );
+
     test('Android signInWithDiscord uses custom scheme listener', () async {
       final kvStore = InMemorySecureKeyValueStore();
       final identityStore = DeviceIdentityStore(

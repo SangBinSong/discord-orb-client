@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 
 import '../contracts/auth_repository.dart';
+import '../models/message_models.dart';
 import '../models/session_models.dart';
 import 'https_validator.dart';
 
@@ -22,6 +23,7 @@ class DeviceIdentityStore {
   static const String activeBackendUrlKey = 'orb.active_backend_url';
   static const String selectedChannelKey = 'orb.selected_channel';
   static const String legacySelectedChannelKey = 'selected_channel';
+  static const String chatListLayoutKey = 'orb.chat_list_layout';
 
   final SecureKeyValueStore _store;
   final OrbPlatform _defaultPlatform;
@@ -256,6 +258,17 @@ class DeviceIdentityStore {
   Future<void> saveSelectedChannel(String channelKey) async {
     _cachedSelectedChannel = channelKey;
     await _store.write(selectedChannelKey, channelKey);
+  }
+
+  /// Reads the persisted [ChatListLayout] preference, defaulting to standard.
+  Future<ChatListLayout> readChatListLayout() async {
+    final raw = await _store.read(chatListLayoutKey);
+    return ChatListLayout.fromStorageValue(raw);
+  }
+
+  /// Persists the user's preferred [ChatListLayout].
+  Future<void> saveChatListLayout(ChatListLayout layout) async {
+    await _store.write(chatListLayoutKey, layout.storageValue);
   }
 
   /// Deletes all selected channel keys from storage and memory.

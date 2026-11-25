@@ -14,6 +14,10 @@ extension OrbPlatformDefaultDeviceName on OrbPlatform {
       };
 }
 
+/// Compile-time optional dev default backend URL injected via `--dart-define`.
+const String kDevDefaultBackendUrl =
+    String.fromEnvironment('ORB_DEFAULT_BACKEND_URL');
+
 /// Setup screen for configuring the HTTPS backend URL and device name.
 class BackendSetupScreen extends StatefulWidget {
   const BackendSetupScreen({
@@ -22,12 +26,39 @@ class BackendSetupScreen extends StatefulWidget {
     required this.onConfigured,
     this.platform,
     this.initialUrl,
+    this.debugDefaultUrlOverride,
+    this.isDebugModeOverride,
   });
 
   final AuthRepository authRepository;
   final VoidCallback onConfigured;
   final OrbPlatform? platform;
   final String? initialUrl;
+  final String? debugDefaultUrlOverride;
+  final bool? isDebugModeOverride;
+
+  /// Resolves the initial URL input field value. Prefills the compile-time dev
+  /// default URL only in debug mode when no saved or explicit URL exists.
+  static String resolveInitialUrl({
+    String? initialUrl,
+    String? savedBackendUrl,
+    String devDefaultBackendUrl = kDevDefaultBackendUrl,
+    bool isDebugMode = kDebugMode,
+  }) {
+    final explicit = initialUrl?.trim() ?? '';
+    if (explicit.isNotEmpty) {
+      return explicit;
+    }
+    final saved = savedBackendUrl?.trim() ?? '';
+    if (saved.isNotEmpty) {
+      return saved;
+    }
+    final devDefault = devDefaultBackendUrl.trim();
+    if (isDebugMode && devDefault.isNotEmpty) {
+      return devDefault;
+    }
+    return '';
+  }
 
   @override
   State<BackendSetupScreen> createState() => _BackendSetupScreenState();
@@ -48,8 +79,13 @@ class _BackendSetupScreenState extends State<BackendSetupScreen> {
     super.initState();
     _resolvedPlatform = widget.platform ?? _detectPlatform();
 
-    final initialUrl =
-        widget.initialUrl ?? widget.authRepository.backendBaseUrl ?? '';
+    final initialUrl = BackendSetupScreen.resolveInitialUrl(
+      initialUrl: widget.initialUrl,
+      savedBackendUrl: widget.authRepository.backendBaseUrl,
+      devDefaultBackendUrl:
+          widget.debugDefaultUrlOverride ?? kDevDefaultBackendUrl,
+      isDebugMode: widget.isDebugModeOverride ?? kDebugMode,
+    );
     _urlController = TextEditingController(text: initialUrl);
 
     final existingDeviceName =

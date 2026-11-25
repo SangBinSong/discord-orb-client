@@ -27,12 +27,14 @@ class EligibleChannel {
     final guildName = (json['guild_name'] ??
         json['guildName'] ??
         fallbackGuildName) as String?;
-    final guildIconUrl = (json['guild_icon_url'] ??
-        json['guildIconUrl'] ??
-        fallbackGuildIconUrl) as String?;
     final channelId = (json['channel_id'] ?? json['channelId']) as String?;
     final channelName =
         (json['channel_name'] ?? json['channelName']) as String?;
+    final rawIcon = (json['guild_icon_url'] ??
+        json['guildIconUrl'] ??
+        fallbackGuildIconUrl) as String?;
+    final guildIconUrl =
+        (rawIcon != null && rawIcon.trim().isNotEmpty) ? rawIcon.trim() : null;
 
     if (guildId == null ||
         guildName == null ||
@@ -95,8 +97,9 @@ class EligibleGuild {
   factory EligibleGuild.fromJson(Map<String, dynamic> json) {
     final guildId = (json['guild_id'] ?? json['guildId']) as String?;
     final guildName = (json['guild_name'] ?? json['guildName']) as String?;
+    final rawIcon = (json['guild_icon_url'] ?? json['guildIconUrl']) as String?;
     final guildIconUrl =
-        (json['guild_icon_url'] ?? json['guildIconUrl']) as String?;
+        (rawIcon != null && rawIcon.trim().isNotEmpty) ? rawIcon.trim() : null;
     final rawChannels = json['channels'] as List<dynamic>? ?? const <dynamic>[];
 
     if (guildId == null || guildName == null) {

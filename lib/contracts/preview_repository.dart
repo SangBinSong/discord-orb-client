@@ -9,6 +9,11 @@ abstract interface class PreviewRepository {
     required String channelId,
     required Object requestToken,
   });
+  Stream<ChannelMessageEvent> subscribeToChannelMessages({
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+  });
   void cancelActivePreview();
   void clearMemory();
 }

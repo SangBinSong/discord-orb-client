@@ -11,6 +11,7 @@ import '../core/https_validator.dart';
 import '../models/channel_models.dart';
 import '../models/message_models.dart';
 import '../models/orb_error.dart';
+import 'sse_parser.dart';
 
 /// Concrete [PreviewRepository] implementing single-flight message preview
 /// fetching, stale-response discarding, 401 token refresh retry, and typed
@@ -27,8 +28,11 @@ class PreviewRepositoryImpl implements PreviewRepository {
   final String? Function() _backendBaseUrlProvider;
 
   int _previewEpoch = 0;
+  int _streamEpoch = 0;
   Object? _activeRequestToken;
   Completer<List<ChannelMessagePreview>>? _activeCompleter;
+  StreamController<ChannelMessageEvent>? _activeStreamController;
+  StreamSubscription<SseFrame>? _activeStreamSubscription;
   List<EligibleGuild>? _cachedGuilds;
   List<ChannelMessagePreview>? _cachedMessages;
 
@@ -37,6 +41,8 @@ class PreviewRepositoryImpl implements PreviewRepository {
   List<ChannelMessagePreview>? get cachedMessages => _cachedMessages;
   bool get hasInFlightPreview =>
       _activeCompleter != null && !_activeCompleter!.isCompleted;
+  bool get hasActiveStream =>
+      _activeStreamController != null && !_activeStreamController!.isClosed;
 
   @override
   Future<List<EligibleGuild>> fetchEligibleGuilds() async {
@@ -123,9 +129,48 @@ class PreviewRepositoryImpl implements PreviewRepository {
   }
 
   @override
+  Stream<ChannelMessageEvent> subscribeToChannelMessages({
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+  }) {
+    _closeActiveStream();
+    final myStreamEpoch = _streamEpoch;
+    final mySessionEpoch = _tokenManager.sessionEpoch;
+    late final StreamController<ChannelMessageEvent> controller;
+
+    bool isStale() =>
+        _streamEpoch != myStreamEpoch ||
+        _tokenManager.sessionEpoch != mySessionEpoch ||
+        controller.isClosed;
+
+    controller = StreamController<ChannelMessageEvent>(
+      onCancel: () {
+        if (identical(_activeStreamController, controller)) {
+          _closeActiveStream();
+        }
+      },
+    );
+    _activeStreamController = controller;
+
+    unawaited(
+      _pumpChannelStream(
+        guildId: guildId,
+        channelId: channelId,
+        controller: controller,
+        myStreamEpoch: myStreamEpoch,
+        isStale: isStale,
+      ),
+    );
+
+    return controller.stream;
+  }
+
+  @override
   void cancelActivePreview() {
     _previewEpoch++;
     _activeRequestToken = null;
+    _closeActiveStream();
     final active = _activeCompleter;
     _activeCompleter = null;
     if (active != null && !active.isCompleted) {
@@ -138,6 +183,191 @@ class PreviewRepositoryImpl implements PreviewRepository {
     cancelActivePreview();
     _cachedGuilds = null;
     _cachedMessages = null;
+  }
+
+  void _closeActiveStream() {
+    _streamEpoch++;
+    final subscription = _activeStreamSubscription;
+    _activeStreamSubscription = null;
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
+    final controller = _activeStreamController;
+    _activeStreamController = null;
+    if (controller != null && !controller.isClosed) {
+      unawaited(controller.close());
+    }
+  }
+
+  Future<void> _pumpChannelStream({
+    required String guildId,
+    required String channelId,
+    required StreamController<ChannelMessageEvent> controller,
+    required int myStreamEpoch,
+    required bool Function() isStale,
+  }) async {
+    try {
+      final backendUrl = _requireBackendUrl();
+      final encodedGuild = Uri.encodeComponent(guildId);
+      final encodedChannel = Uri.encodeComponent(channelId);
+      final uri = HttpsValidator.resolveEndpoint(
+        backendUrl,
+        '/api/v1/guilds/$encodedGuild/channels/$encodedChannel/stream',
+      );
+
+      final streamedResponse = await _authorizedStreamGetWithRefresh(
+        backendUrl: backendUrl,
+        uri: uri,
+        isStale: isStale,
+      );
+
+      if (isStale()) {
+        unawaited(streamedResponse.stream.listen((_) {}).cancel());
+        return;
+      }
+
+      final doneCompleter = Completer<void>();
+      final sub = parseSseByteStream(streamedResponse.stream).listen(
+        (SseFrame frame) {
+          if (isStale()) {
+            _closeActiveStream();
+            return;
+          }
+          final event = ChannelMessageEvent.fromSseFrame(
+            eventName: frame.event,
+            data: frame.data,
+          );
+          if (event != null && !controller.isClosed) {
+            controller.add(event);
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!isStale() && !controller.isClosed) {
+            controller.addError(error, stackTrace);
+          }
+          if (!doneCompleter.isCompleted) {
+            doneCompleter.complete();
+          }
+        },
+        onDone: () {
+          if (!doneCompleter.isCompleted) {
+            doneCompleter.complete();
+          }
+        },
+        cancelOnError: true,
+      );
+
+      if (isStale()) {
+        await sub.cancel();
+        return;
+      }
+
+      _activeStreamSubscription = sub;
+      await doneCompleter.future;
+
+      if (identical(_activeStreamSubscription, sub)) {
+        _activeStreamSubscription = null;
+      }
+      if (!controller.isClosed) {
+        await controller.close();
+      }
+    } on OrbException catch (error, stackTrace) {
+      if (error.state == OrbPreviewState.sessionExpired &&
+          _streamEpoch == myStreamEpoch &&
+          !controller.isClosed) {
+        controller.addError(error, stackTrace);
+        await controller.close();
+        return;
+      }
+      if (!isStale() && !controller.isClosed) {
+        controller.addError(error, stackTrace);
+        await controller.close();
+      }
+    } catch (error, stackTrace) {
+      if (!isStale() && !controller.isClosed) {
+        controller.addError(
+          OrbException(
+            code: 'stream_error',
+            message: 'Real-time stream error: $error',
+            state: OrbPreviewState.networkError,
+          ),
+          stackTrace,
+        );
+        await controller.close();
+      }
+    } finally {
+      if (identical(_activeStreamController, controller)) {
+        _activeStreamController = null;
+      }
+      if (!controller.isClosed) {
+        await controller.close();
+      }
+    }
+  }
+
+  Future<http.StreamedResponse> _authorizedStreamGetWithRefresh({
+    required String backendUrl,
+    required Uri uri,
+    required bool Function() isStale,
+  }) async {
+    var accessToken = await _tokenManager.getValidAccessToken(backendUrl);
+    if (isStale()) {
+      throw _cancelledException();
+    }
+
+    var response = await _sendAuthorizedStreamGet(uri, accessToken);
+    if (isStale()) {
+      unawaited(response.stream.listen((_) {}).cancel());
+      throw _cancelledException();
+    }
+
+    if (response.statusCode == HttpStatus.unauthorized) {
+      await _drainStreamSafely(response);
+      final refreshed = await _tokenManager.refreshAccessToken(
+        backendUrl,
+        failedAccessToken: accessToken,
+      );
+      if (isStale()) {
+        throw _cancelledException();
+      }
+      accessToken = refreshed.accessToken;
+      response = await _sendAuthorizedStreamGet(uri, accessToken);
+      if (isStale()) {
+        unawaited(response.stream.listen((_) {}).cancel());
+        throw _cancelledException();
+      }
+      if (response.statusCode == HttpStatus.unauthorized) {
+        final full = await http.Response.fromStream(response);
+        await _tokenManager.invalidateSession(backendUrl);
+        throw OrbHttpClient.mapHttpError(full);
+      }
+    }
+
+    if (response.statusCode != HttpStatus.ok) {
+      final full = await http.Response.fromStream(response);
+      throw OrbHttpClient.mapHttpError(full);
+    }
+
+    return response;
+  }
+
+  Future<http.StreamedResponse> _sendAuthorizedStreamGet(
+    Uri uri,
+    String accessToken,
+  ) {
+    final request = http.Request('GET', uri)
+      ..headers['authorization'] = 'Bearer $accessToken'
+      ..headers['accept'] = 'text/event-stream'
+      ..headers['cache-control'] = 'no-cache';
+    return _httpClient.send(request);
+  }
+
+  static Future<void> _drainStreamSafely(http.StreamedResponse response) async {
+    try {
+      await response.stream.drain<void>();
+    } catch (_) {
+      // Ignore drain errors on rejected streams.
+    }
   }
 
   void _supersedeActivePreview({required Object newToken}) {

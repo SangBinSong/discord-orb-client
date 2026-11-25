@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:discord_orb/api/preview_repository_impl.dart';
+import 'package:discord_orb/api/sse_parser.dart';
 import 'package:discord_orb/app.dart';
 import 'package:discord_orb/auth/auth_repository_impl.dart';
 import 'package:discord_orb/auth/oauth_loopback_listener.dart';
@@ -14,6 +15,7 @@ import 'package:discord_orb/contracts/auth_repository.dart';
 import 'package:discord_orb/core/device_identity_store.dart';
 import 'package:discord_orb/core/http_client.dart';
 import 'package:discord_orb/core/https_validator.dart';
+import 'package:discord_orb/models/message_models.dart';
 import 'package:discord_orb/models/orb_error.dart';
 import 'package:discord_orb/models/session_models.dart';
 import 'package:flutter/services.dart';
@@ -1297,6 +1299,178 @@ void main() {
           ),
         ),
       );
+    });
+
+    test('SSE parser handles multi-chunk UTF-8, comments, and event types',
+        () async {
+      final raw = ': keepalive\r\n\r\n'
+          'event: ready\n'
+          'data: {"guild_id":"g-1","channel_id":"c-1"}\n\n'
+          'event: message_create\n'
+          'data: {"type":"message_create","guild_id":"g-1","channel_id":"c-1",'
+          '"message":{"id":"m-1","author_name":"한글유저","timestamp":"2026-11-25T12:00:00Z","content":"안녕하세요 👋"}}\n\n'
+          'event: message_update\n'
+          'data: {"type":"message_update","guild_id":"g-1","channel_id":"c-1",'
+          '"message":{"id":"m-1","content":"수정됨"}}\n\n'
+          'event: message_delete\n'
+          'data: {"type":"message_delete","guild_id":"g-1","channel_id":"c-1","message_id":"m-1"}\n\n';
+      final bytes = utf8.encode(raw);
+      // Slice into tiny 7-byte chunks to split multi-byte UTF-8 sequences & lines.
+      final chunks = <List<int>>[];
+      for (var i = 0; i < bytes.length; i += 7) {
+        final end = (i + 7 > bytes.length) ? bytes.length : i + 7;
+        chunks.add(bytes.sublist(i, end));
+      }
+
+      final frames = await parseSseByteStream(
+        Stream<List<int>>.fromIterable(chunks),
+      ).toList();
+
+      expect(frames, hasLength(4));
+      final events = frames
+          .map(
+            (SseFrame f) => ChannelMessageEvent.fromSseFrame(
+              eventName: f.event,
+              data: f.data,
+            ),
+          )
+          .whereType<ChannelMessageEvent>()
+          .toList();
+
+      expect(events, hasLength(4));
+      expect(events[0].type, ChannelMessageEventType.ready);
+      expect(events[1].type, ChannelMessageEventType.create);
+      expect(events[1].message?.authorName, '한글유저');
+      expect(events[1].message?.content, '안녕하세요 👋');
+      expect(events[2].type, ChannelMessageEventType.update);
+      expect(events[2].messageId, 'm-1');
+      expect(events[2].content, '수정됨');
+      expect(events[3].type, ChannelMessageEventType.delete);
+      expect(events[3].messageId, 'm-1');
+    });
+
+    test('subscribeToChannelMessages refreshes on 401, streams events, and cancels cleanly',
+        () async {
+      final kvStore = InMemorySecureKeyValueStore();
+      final identityStore = DeviceIdentityStore(
+        store: kvStore,
+        defaultPlatform: OrbPlatform.macos,
+      );
+      final fixedNow = DateTime.utc(2026, 11, 25, 12, 0);
+      const backend = 'https://orb.example.com';
+      await identityStore.configureBackend(backend);
+      await identityStore.saveSessionTokens(
+        backend,
+        _makeTokens(
+          accessToken: 'expired-stream-access',
+          refreshToken: 'refresh-1',
+          now: fixedNow,
+        ),
+      );
+
+      final sseChunks = StreamController<List<int>>();
+      var streamCancelled = false;
+      sseChunks.onCancel = () {
+        streamCancelled = true;
+      };
+      var refreshCalls = 0;
+      var streamRequests = 0;
+
+      final httpClient = OrbHttpClient(
+        inner: MockClient.streaming((request, _) async {
+          if (request.url.path == '/api/v1/auth/refresh') {
+            refreshCalls += 1;
+            final payload = utf8.encode(
+              jsonEncode(
+                _makeTokens(
+                  accessToken: 'fresh-stream-access',
+                  refreshToken: 'refresh-2',
+                  now: fixedNow,
+                ).toJson(),
+              ),
+            );
+            return http.StreamedResponse(
+              Stream<List<int>>.value(payload),
+              200,
+              headers: const <String, String>{'content-type': 'application/json'},
+            );
+          }
+          if (request.url.path == '/api/v1/guilds/g-1/channels/c-1/stream') {
+            streamRequests += 1;
+            expect(request.headers['accept'], 'text/event-stream');
+            if (request.headers['authorization'] ==
+                'Bearer expired-stream-access') {
+              return http.StreamedResponse(
+                Stream<List<int>>.value(
+                  utf8.encode('{"code":"token_expired","detail":"Expired"}'),
+                ),
+                401,
+              );
+            }
+            expect(
+              request.headers['authorization'],
+              'Bearer fresh-stream-access',
+            );
+            return http.StreamedResponse(
+              sseChunks.stream,
+              200,
+              headers: const <String, String>{
+                'content-type': 'text/event-stream',
+              },
+            );
+          }
+          return http.StreamedResponse(const Stream<List<int>>.empty(), 404);
+        }),
+      );
+      addTearDown(httpClient.close);
+
+      final tokenManager = TokenManager(
+        httpClient: httpClient,
+        identityStore: identityStore,
+        now: () => fixedNow,
+      );
+      final previewRepo = PreviewRepositoryImpl(
+        httpClient: httpClient,
+        tokenManager: tokenManager,
+        backendBaseUrlProvider: () => backend,
+      );
+
+      final received = <ChannelMessageEvent>[];
+      final sub = previewRepo
+          .subscribeToChannelMessages(
+            guildId: 'g-1',
+            channelId: 'c-1',
+            requestToken: Object(),
+          )
+          .listen(received.add);
+
+      sseChunks.add(
+        utf8.encode('event: ready\ndata: {"guild_id":"g-1","channel_id":"c-1"}\n\n'),
+      );
+      sseChunks.add(
+        utf8.encode(
+          'event: message_create\n'
+          'data: {"type":"message_create","guild_id":"g-1","channel_id":"c-1",'
+          '"message":{"id":"m-live","author_name":"Alice","timestamp":"2026-11-25T12:05:00Z","content":"Live!"}}\n\n',
+        ),
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(refreshCalls, 1);
+      expect(streamRequests, 2);
+      expect(received, hasLength(2));
+      expect(received[0].type, ChannelMessageEventType.ready);
+      expect(received[1].message?.content, 'Live!');
+      expect(previewRepo.hasActiveStream, isTrue);
+
+      // clearMemory() immediately cancels underlying HTTP stream subscription.
+      previewRepo.clearMemory();
+      await Future<void>.delayed(Duration.zero);
+      expect(streamCancelled, isTrue);
+      expect(previewRepo.hasActiveStream, isFalse);
+
+      await sub.cancel();
+      await sseChunks.close();
     });
   });
 }

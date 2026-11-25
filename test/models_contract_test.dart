@@ -121,12 +121,61 @@ void main() {
       final message = ChannelMessagePreview(
         id: 'm-1',
         authorName: 'alice',
+        authorAvatarUrl:
+            'https://cdn.discordapp.com/avatars/100/av.png?size=64',
         timestamp: DateTime.utc(2026, 11, 19, 10, 30),
         content: 'Hello Orb!',
       );
       final decoded = ChannelMessagePreview.fromJson(message.toJson());
       expect(decoded, message);
       expect(decoded.hashCode, message.hashCode);
+
+      // Nullable / absent author_avatar_url and guild_icon_url remain backward-compatible.
+      final withoutAvatar = ChannelMessagePreview.fromJson(<String, dynamic>{
+        'id': 'm-2',
+        'author_name': 'bob',
+        'author_avatar_url': null,
+        'timestamp': '2026-11-19T10:31:00Z',
+        'content': 'No avatar',
+      });
+      expect(withoutAvatar.authorAvatarUrl, isNull);
+
+      final guildWithIcon = EligibleGuild.fromJson(<String, dynamic>{
+        'guild_id': 'g-2',
+        'guild_name': 'Icon Guild',
+        'guild_icon_url':
+            'https://cdn.discordapp.com/icons/g-2/iconhash.png?size=64',
+        'channels': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'guild_id': 'g-2',
+            'guild_name': 'Icon Guild',
+            'channel_id': 'c-2',
+            'channel_name': 'general',
+          },
+        ],
+      });
+      expect(
+        guildWithIcon.guildIconUrl,
+        'https://cdn.discordapp.com/icons/g-2/iconhash.png?size=64',
+      );
+      expect(
+        guildWithIcon.channels.single.guildIconUrl,
+        'https://cdn.discordapp.com/icons/g-2/iconhash.png?size=64',
+      );
+
+      // Partial SSE message_update preserves existing authorAvatarUrl.
+      final updateEvent = ChannelMessageEvent.fromSseFrame(
+        eventName: 'message_update',
+        data:
+            '{"type":"message_update","guild_id":"g-2","channel_id":"c-2","message":{"id":"m-1","content":"Edited"}}',
+      );
+      expect(updateEvent, isNotNull);
+      final merged = mergeChannelMessageEvent(
+        <ChannelMessagePreview>[message],
+        updateEvent!,
+      );
+      expect(merged.single.content, 'Edited');
+      expect(merged.single.authorAvatarUrl, message.authorAvatarUrl);
     });
   });
 

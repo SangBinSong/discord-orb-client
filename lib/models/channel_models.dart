@@ -7,23 +7,29 @@ class EligibleChannel {
     required this.guildName,
     required this.channelId,
     required this.channelName,
+    this.guildIconUrl,
   });
 
   final String guildId;
   final String guildName;
   final String channelId;
   final String channelName;
+  final String? guildIconUrl;
 
   factory EligibleChannel.fromJson(
     Map<String, dynamic> json, {
     String? fallbackGuildId,
     String? fallbackGuildName,
+    String? fallbackGuildIconUrl,
   }) {
     final guildId =
         (json['guild_id'] ?? json['guildId'] ?? fallbackGuildId) as String?;
     final guildName = (json['guild_name'] ??
         json['guildName'] ??
         fallbackGuildName) as String?;
+    final guildIconUrl = (json['guild_icon_url'] ??
+        json['guildIconUrl'] ??
+        fallbackGuildIconUrl) as String?;
     final channelId = (json['channel_id'] ?? json['channelId']) as String?;
     final channelName =
         (json['channel_name'] ?? json['channelName']) as String?;
@@ -38,6 +44,7 @@ class EligibleChannel {
     return EligibleChannel(
       guildId: guildId,
       guildName: guildName,
+      guildIconUrl: guildIconUrl,
       channelId: channelId,
       channelName: channelName,
     );
@@ -46,6 +53,7 @@ class EligibleChannel {
   Map<String, dynamic> toJson() => <String, dynamic>{
         'guild_id': guildId,
         'guild_name': guildName,
+        if (guildIconUrl != null) 'guild_icon_url': guildIconUrl,
         'channel_id': channelId,
         'channel_name': channelName,
       };
@@ -56,12 +64,14 @@ class EligibleChannel {
     return other is EligibleChannel &&
         other.guildId == guildId &&
         other.guildName == guildName &&
+        other.guildIconUrl == guildIconUrl &&
         other.channelId == channelId &&
         other.channelName == channelName;
   }
 
   @override
-  int get hashCode => Object.hash(guildId, guildName, channelId, channelName);
+  int get hashCode =>
+      Object.hash(guildId, guildName, guildIconUrl, channelId, channelName);
 
   @override
   String toString() =>
@@ -74,15 +84,19 @@ class EligibleGuild {
     required this.guildId,
     required this.guildName,
     required this.channels,
+    this.guildIconUrl,
   });
 
   final String guildId;
   final String guildName;
+  final String? guildIconUrl;
   final List<EligibleChannel> channels;
 
   factory EligibleGuild.fromJson(Map<String, dynamic> json) {
     final guildId = (json['guild_id'] ?? json['guildId']) as String?;
     final guildName = (json['guild_name'] ?? json['guildName']) as String?;
+    final guildIconUrl =
+        (json['guild_icon_url'] ?? json['guildIconUrl']) as String?;
     final rawChannels = json['channels'] as List<dynamic>? ?? const <dynamic>[];
 
     if (guildId == null || guildName == null) {
@@ -95,6 +109,7 @@ class EligibleGuild {
             item as Map<String, dynamic>,
             fallbackGuildId: guildId,
             fallbackGuildName: guildName,
+            fallbackGuildIconUrl: guildIconUrl,
           ),
         )
         .toList(growable: false);
@@ -102,6 +117,7 @@ class EligibleGuild {
     return EligibleGuild(
       guildId: guildId,
       guildName: guildName,
+      guildIconUrl: guildIconUrl,
       channels: channels,
     );
   }
@@ -109,6 +125,7 @@ class EligibleGuild {
   Map<String, dynamic> toJson() => <String, dynamic>{
         'guild_id': guildId,
         'guild_name': guildName,
+        if (guildIconUrl != null) 'guild_icon_url': guildIconUrl,
         'channels': channels.map((c) => c.toJson()).toList(growable: false),
       };
 
@@ -118,10 +135,11 @@ class EligibleGuild {
     return other is EligibleGuild &&
         other.guildId == guildId &&
         other.guildName == guildName &&
+        other.guildIconUrl == guildIconUrl &&
         listEquals(other.channels, channels);
   }
 
   @override
   int get hashCode =>
-      Object.hash(guildId, guildName, Object.hashAll(channels));
+      Object.hash(guildId, guildName, guildIconUrl, Object.hashAll(channels));
 }

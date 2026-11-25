@@ -56,6 +56,11 @@ class DesktopOrbWindowController implements OrbWindowController {
   }
 
   @override
+  Future<void> startOrbDrag() async {
+    await _channel.invokeMethod<void>('startOrbDrag');
+  }
+
+  @override
   Future<void> moveOrbBy(Offset delta) async {
     await _channel.invokeMethod<void>('moveOrb', <String, dynamic>{
       'dx': delta.dx,

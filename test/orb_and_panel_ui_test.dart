@@ -20,6 +20,7 @@ class _RecordingWindowController extends NoopOrbWindowController {
   int collapseCount = 0;
   int hideOrbCount = 0;
   int showCollapsedOrbCount = 0;
+  int startOrbDragCount = 0;
   final List<Offset> moveOrbDeltas = <Offset>[];
   int showMainWindowCount = 0;
 
@@ -42,6 +43,11 @@ class _RecordingWindowController extends NoopOrbWindowController {
   @override
   Future<void> showCollapsedOrb() async {
     showCollapsedOrbCount += 1;
+  }
+
+  @override
+  Future<void> startOrbDrag() async {
+    startOrbDragCount += 1;
   }
 
   @override
@@ -329,7 +335,7 @@ void main() {
     });
 
     testWidgets(
-      'collapsed 80x80 desktop viewport centers orb, delegates drag to moveOrbBy, and requests full expanded size on tap without overflow',
+      'collapsed 80x80 desktop viewport centers orb, delegates drag once to startOrbDrag without moveOrbBy spam, and requests full expanded size on tap without overflow',
       (WidgetTester tester) async {
         final repo = _FakePreviewRepository();
         final window = _RecordingWindowController();
@@ -350,19 +356,15 @@ void main() {
         final shellTopLeft = tester.getTopLeft(find.byType(OrbShell));
         expect(orbTopLeft - shellTopLeft, const Offset(12, 12));
 
-        // Dragging in collapsed 80x80 viewport delegates to native window moveOrbBy.
+        // Dragging in collapsed 80x80 viewport initiates native OS drag once via
+        // startOrbDrag() instead of spamming moveOrbBy() every pan update.
         await tester.drag(
           find.byKey(OrbButton.orbButtonKey),
           const Offset(24, -16),
         );
         await tester.pump();
-        expect(window.moveOrbDeltas, isNotEmpty);
-        final totalDelta = window.moveOrbDeltas.fold<Offset>(
-          Offset.zero,
-          (Offset acc, Offset delta) => acc + delta,
-        );
-        expect(totalDelta.dx, greaterThan(0));
-        expect(totalDelta.dy, lessThan(0));
+        expect(window.startOrbDragCount, 1);
+        expect(window.moveOrbDeltas, isEmpty);
         // Orb remains centered in the collapsed window.
         expect(
           tester.getTopLeft(find.byKey(OrbButton.orbButtonKey)) -

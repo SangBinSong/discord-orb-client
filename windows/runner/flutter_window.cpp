@@ -220,6 +220,11 @@ void FlutterWindow::HandleWindowMethodCall(
     result->Success();
     return;
   }
+  if (method == "startOrbDrag") {
+    StartOrbDrag();
+    result->Success();
+    return;
+  }
   if (method == "showMainWindow") {
     ShowMainWindow();
     result->Success();
@@ -343,6 +348,33 @@ void FlutterWindow::ExpandPanel(double width, double height) {
                  SWP_SHOWWINDOW);
   ::SetForegroundWindow(hwnd);
   ::SetFocus(hwnd);
+}
+
+void FlutterWindow::StartOrbDrag() {
+  HWND hwnd = GetHandle();
+  if (!hwnd || !is_overlay_mode_ || is_expanded_) {
+    return;
+  }
+
+  ::ReleaseCapture();
+  ::SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+
+  RECT current_rect{};
+  if (::GetWindowRect(hwnd, &current_rect)) {
+    RECT work_area = GetMonitorWorkArea(hwnd);
+    int width = current_rect.right - current_rect.left;
+    int height = current_rect.bottom - current_rect.top;
+    RECT clamped = ClampRectToWorkArea(current_rect.left, current_rect.top,
+                                       width, height, work_area);
+    if (clamped.left != current_rect.left || clamped.top != current_rect.top) {
+      ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
+                     clamped.right - clamped.left, clamped.bottom - clamped.top,
+                     SWP_NOACTIVATE);
+    }
+    collapsed_origin_.x = clamped.left;
+    collapsed_origin_.y = clamped.top;
+    has_collapsed_origin_ = true;
+  }
 }
 
 void FlutterWindow::MoveOrb(double dx, double dy) {

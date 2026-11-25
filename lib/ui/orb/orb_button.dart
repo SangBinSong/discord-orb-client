@@ -8,6 +8,7 @@ class OrbButton extends StatelessWidget {
     required this.isPanelOpen,
     required this.onTap,
     this.size = const Size(56, 56),
+    this.onDragStart,
     this.onDragDelta,
     this.onHideRequested,
   });
@@ -17,6 +18,7 @@ class OrbButton extends StatelessWidget {
   final bool isPanelOpen;
   final VoidCallback onTap;
   final Size size;
+  final VoidCallback? onDragStart;
   final ValueChanged<Offset>? onDragDelta;
   final VoidCallback? onHideRequested;
 
@@ -35,6 +37,9 @@ class OrbButton extends StatelessWidget {
           key: orbButtonKey,
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
+          onPanStart: onDragStart == null
+              ? null
+              : (DragStartDetails _) => onDragStart!(),
           onPanUpdate: onDragDelta == null
               ? null
               : (DragUpdateDetails details) => onDragDelta!(details.delta),

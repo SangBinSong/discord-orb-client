@@ -69,6 +69,9 @@ class AndroidOrbWindowController implements OrbWindowController {
   }
 
   @override
+  Future<void> startOrbDrag() async {}
+
+  @override
   Future<void> moveOrbBy(Offset delta) async {}
 
   @override

@@ -185,6 +185,7 @@ void main() {
     test('NoopOrbWindowController methods and test stream helpers work',
         () async {
       final controller = NoopOrbWindowController();
+      expect(controller.usesNativeWindowDrag, isFalse);
       expect(await controller.hasOverlayPermission(), isTrue);
       await controller.openOverlayPermissionSettings();
       await controller.showCollapsedOrb();

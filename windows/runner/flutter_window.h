@@ -40,6 +40,8 @@ class FlutterWindow : public Win32Window {
   void StartOrbDrag();
   void MoveOrb(double dx, double dy);
   void HideOrb();
+  bool IsPointInOrbDragRegion(HWND hwnd, POINT screen_pt) const;
+  void SyncCollapsedOriginFromWindow(HWND hwnd);
   void UnregisterSessionNotification();
   void NotifyPanelDismissRequested();
   void NotifyLockOrSleep();
@@ -60,6 +62,8 @@ class FlutterWindow : public Win32Window {
 
   bool is_overlay_mode_ = false;
   bool is_expanded_ = false;
+  bool is_native_dragging_ = false;
+  bool did_move_while_expanded_ = false;
   bool has_collapsed_origin_ = false;
   POINT collapsed_origin_{0, 0};
   bool session_notification_registered_ = false;

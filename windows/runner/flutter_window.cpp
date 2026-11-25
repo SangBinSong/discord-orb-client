@@ -276,6 +276,10 @@ void FlutterWindow::ShowCollapsedOrb() {
     return;
   }
 
+  if (is_overlay_mode_ && is_expanded_ && did_move_while_expanded_) {
+    SyncCollapsedOriginFromWindow(hwnd);
+  }
+
   ConfigureOverlayWindow(hwnd);
 
   HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -297,6 +301,7 @@ void FlutterWindow::ShowCollapsedOrb() {
   collapsed_origin_.y = clamped.top;
   has_collapsed_origin_ = true;
   is_expanded_ = false;
+  did_move_while_expanded_ = false;
 
   ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
                  clamped.right - clamped.left, clamped.bottom - clamped.top,
@@ -343,6 +348,7 @@ void FlutterWindow::ExpandPanel(double width, double height) {
                                      panel_height, work_area);
 
   is_expanded_ = true;
+  did_move_while_expanded_ = false;
   ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
                  clamped.right - clamped.left, clamped.bottom - clamped.top,
                  SWP_SHOWWINDOW);
@@ -352,12 +358,14 @@ void FlutterWindow::ExpandPanel(double width, double height) {
 
 void FlutterWindow::StartOrbDrag() {
   HWND hwnd = GetHandle();
-  if (!hwnd || !is_overlay_mode_ || is_expanded_) {
+  if (!hwnd || !is_overlay_mode_ || is_native_dragging_) {
     return;
   }
 
+  is_native_dragging_ = true;
   ::ReleaseCapture();
   ::SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+  is_native_dragging_ = false;
 
   RECT current_rect{};
   if (::GetWindowRect(hwnd, &current_rect)) {
@@ -371,9 +379,10 @@ void FlutterWindow::StartOrbDrag() {
                      clamped.right - clamped.left, clamped.bottom - clamped.top,
                      SWP_NOACTIVATE);
     }
-    collapsed_origin_.x = clamped.left;
-    collapsed_origin_.y = clamped.top;
-    has_collapsed_origin_ = true;
+    if (is_expanded_) {
+      did_move_while_expanded_ = true;
+    }
+    SyncCollapsedOriginFromWindow(hwnd);
   }
 }
 
@@ -402,11 +411,53 @@ void FlutterWindow::MoveOrb(double dx, double dy) {
   ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
                  clamped.right - clamped.left, clamped.bottom - clamped.top,
                  SWP_NOACTIVATE);
-  if (!is_expanded_) {
-    collapsed_origin_.x = clamped.left;
-    collapsed_origin_.y = clamped.top;
-    has_collapsed_origin_ = true;
+  if (is_expanded_) {
+    did_move_while_expanded_ = true;
   }
+  SyncCollapsedOriginFromWindow(hwnd);
+}
+
+bool FlutterWindow::IsPointInOrbDragRegion(HWND hwnd, POINT screen_pt) const {
+  if (!is_overlay_mode_) {
+    return false;
+  }
+  RECT rect{};
+  if (!::GetWindowRect(hwnd, &rect)) {
+    return false;
+  }
+  if (!is_expanded_) {
+    return screen_pt.x >= rect.left && screen_pt.x <= rect.right &&
+           screen_pt.y >= rect.top && screen_pt.y <= rect.bottom;
+  }
+  HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  double scale = GetScaleFactorForMonitor(monitor);
+  int orb_size =
+      static_cast<int>(std::lround(kCollapsedOrbSizeLogical * scale));
+  return screen_pt.x >= rect.right - orb_size && screen_pt.x <= rect.right &&
+         screen_pt.y >= rect.top && screen_pt.y <= rect.top + orb_size;
+}
+
+void FlutterWindow::SyncCollapsedOriginFromWindow(HWND hwnd) {
+  if (!is_overlay_mode_) {
+    return;
+  }
+  RECT current_rect{};
+  if (!::GetWindowRect(hwnd, &current_rect)) {
+    return;
+  }
+  HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  double scale = GetScaleFactorForMonitor(monitor);
+  RECT work_area = GetMonitorWorkArea(hwnd);
+  int orb_size =
+      static_cast<int>(std::lround(kCollapsedOrbSizeLogical * scale));
+
+  int raw_x = is_expanded_ ? (current_rect.right - orb_size) : current_rect.left;
+  int raw_y = current_rect.top;
+  RECT clamped_orb =
+      ClampRectToWorkArea(raw_x, raw_y, orb_size, orb_size, work_area);
+  collapsed_origin_.x = clamped_orb.left;
+  collapsed_origin_.y = clamped_orb.top;
+  has_collapsed_origin_ = true;
 }
 
 void FlutterWindow::HideOrb() {
@@ -477,6 +528,21 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_NCHITTEST && is_overlay_mode_ && is_native_dragging_) {
+    POINT screen_pt{static_cast<short>(LOWORD(lparam)),
+                    static_cast<short>(HIWORD(lparam))};
+    if (IsPointInOrbDragRegion(hwnd, screen_pt)) {
+      return HTCAPTION;
+    }
+  }
+
+  if (message == WM_EXITSIZEMOVE && is_overlay_mode_) {
+    if (is_expanded_) {
+      did_move_while_expanded_ = true;
+    }
+    SyncCollapsedOriginFromWindow(hwnd);
+  }
+
   if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) &&
       wparam == VK_ESCAPE && is_expanded_) {
     NotifyPanelDismissRequested();

@@ -22,6 +22,9 @@ class AndroidOrbWindowController implements OrbWindowController {
   bool _disposed = false;
 
   @override
+  bool get usesNativeWindowDrag => false;
+
+  @override
   Future<bool> hasOverlayPermission() async {
     final granted = await _channel.invokeMethod<bool>('hasOverlayPermission');
     return granted ?? false;

@@ -15,6 +15,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _RecordingWindowController extends NoopOrbWindowController {
+  _RecordingWindowController({this.usesNativeWindowDrag = false});
+
+  @override
+  final bool usesNativeWindowDrag;
+
   int expandCount = 0;
   Size? lastExpandSize;
   int collapseCount = 0;
@@ -406,6 +411,131 @@ void main() {
             tester.getRect(find.byKey(OrbButton.orbButtonKey));
         final panelRect = tester.getRect(find.byType(MessagePanel));
         expect(expandedOrbRect.overlaps(panelRect), isFalse);
+      },
+    );
+
+    testWidgets(
+      'native window drag mode anchors expanded orb at top-right, triggers startOrbDrag instead of shifting local offset, and omits clipped Tooltip while keeping Semantics',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController(usesNativeWindowDrag: true);
+        final controller = OrbShellController();
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1)];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            viewportSize: const Size(352, 576),
+            initialOrbOffset: const Offset(40, 120),
+          ),
+        );
+
+        // Even with initialOrbOffset provided, native window drag anchors orb at top-right.
+        const expectedAnchor = Offset(352 - 56 - 16, 16);
+        final shellTopLeft = tester.getTopLeft(find.byType(OrbShell));
+        expect(
+          tester.getTopLeft(find.byKey(OrbButton.orbButtonKey)) - shellTopLeft,
+          expectedAnchor,
+        );
+        expect(find.byType(Tooltip), findsNothing);
+        expect(
+          find.bySemanticsLabel('Open Discord Orb panel'),
+          findsOneWidget,
+        );
+
+        // Open panel -> orb becomes close button at top-right, Semantics updates, Tooltip stays omitted.
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+        expect(controller.isPanelOpen, isTrue);
+        expect(find.byType(MessagePanel), findsOneWidget);
+        expect(
+          find.bySemanticsLabel('Close Discord Orb panel'),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byType(OrbButton),
+            matching: find.byType(Tooltip),
+          ),
+          findsNothing,
+        );
+
+        // Dragging expanded (X) orb triggers native startOrbDrag() and does not move local offset.
+        await tester.drag(
+          find.byKey(OrbButton.orbButtonKey),
+          const Offset(-80, 60),
+        );
+        await tester.pump();
+        expect(window.startOrbDragCount, 1);
+        expect(window.moveOrbDeltas, isEmpty);
+        expect(
+          tester.getTopLeft(find.byKey(OrbButton.orbButtonKey)) - shellTopLeft,
+          expectedAnchor,
+        );
+      },
+    );
+
+    testWidgets(
+      'OrbButton showTooltip controls Tooltip rendering while preserving Semantics, and non-native OrbShell enables Tooltip',
+      (WidgetTester tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Column(
+                children: <Widget>[
+                  OrbButton(
+                    isPanelOpen: false,
+                    showTooltip: false,
+                    onTap: () {},
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+        expect(find.byType(Tooltip), findsNothing);
+        expect(find.bySemanticsLabel('Open Discord Orb panel'), findsOneWidget);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Column(
+                children: <Widget>[
+                  OrbButton(
+                    isPanelOpen: true,
+                    showTooltip: true,
+                    onTap: () {},
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+        expect(find.byType(Tooltip), findsOneWidget);
+        expect(
+          find.bySemanticsLabel('Close Discord Orb panel'),
+          findsOneWidget,
+        );
+
+        // Non-native OrbShell (usesNativeWindowDrag == false) passes showTooltip: true.
+        final repo = _FakePreviewRepository();
+        final nonNativeWindow =
+            _RecordingWindowController(usesNativeWindowDrag: false);
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: nonNativeWindow,
+          ),
+        );
+        expect(
+          find.descendant(
+            of: find.byType(OrbButton),
+            matching: find.byType(Tooltip),
+          ),
+          findsOneWidget,
+        );
       },
     );
   });

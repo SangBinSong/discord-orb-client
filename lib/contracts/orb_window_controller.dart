@@ -3,6 +3,7 @@ import 'dart:ui';
 
 /// Platform window/overlay controller for the floating Discord Orb and panel.
 abstract interface class OrbWindowController {
+  bool get usesNativeWindowDrag => false;
   Future<bool> hasOverlayPermission();
   Future<void> openOverlayPermissionSettings();
   Future<void> showCollapsedOrb();
@@ -25,6 +26,9 @@ class NoopOrbWindowController implements OrbWindowController {
       StreamController<void>.broadcast();
 
   bool _disposed = false;
+
+  @override
+  bool get usesNativeWindowDrag => false;
 
   @override
   Future<bool> hasOverlayPermission() async => true;

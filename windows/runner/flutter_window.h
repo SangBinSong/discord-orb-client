@@ -37,6 +37,7 @@ class FlutterWindow : public Win32Window {
   void ShowMainWindow();
   void ShowCollapsedOrb();
   void ExpandPanel(double width, double height);
+  void StartOrbDrag();
   void MoveOrb(double dx, double dy);
   void HideOrb();
   void UnregisterSessionNotification();

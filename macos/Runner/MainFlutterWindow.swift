@@ -7,6 +7,7 @@ class MainFlutterWindow: NSWindow {
   private static let mainWindowSize = NSSize(width: 480, height: 680)
   private static let defaultMargin: CGFloat = 24
   private static let escapeKeyCode: UInt16 = 53
+  private static let dragThreshold: CGFloat = 4.0
 
   private weak var flutterViewController: FlutterViewController?
   private var windowChannel: FlutterMethodChannel?
@@ -14,6 +15,10 @@ class MainFlutterWindow: NSWindow {
   private var isExpanded = false
   private var collapsedOrigin: NSPoint?
   private var keyMonitor: Any?
+  private var mouseMonitor: Any?
+  private var pendingDragEvent: NSEvent?
+  private var pendingDragStartScreenPoint: NSPoint?
+  private var isNativeDragging = false
   private var localObservers: [NSObjectProtocol] = []
   private var workspaceObservers: [NSObjectProtocol] = []
   private var distributedObservers: [NSObjectProtocol] = []
@@ -40,6 +45,10 @@ class MainFlutterWindow: NSWindow {
       NSEvent.removeMonitor(monitor)
       keyMonitor = nil
     }
+    if let monitor = mouseMonitor {
+      NSEvent.removeMonitor(monitor)
+      mouseMonitor = nil
+    }
     for observer in localObservers {
       NotificationCenter.default.removeObserver(observer)
     }
@@ -61,6 +70,9 @@ class MainFlutterWindow: NSWindow {
 
   private func configureMainWindow(centerWindow: Bool) {
     isOverlayMode = false
+    pendingDragEvent = nil
+    pendingDragStartScreenPoint = nil
+    isNativeDragging = false
     styleMask = [.titled, .closable, .miniaturizable, .resizable]
     title = "Discord Orb"
     isOpaque = true
@@ -114,7 +126,24 @@ class MainFlutterWindow: NSWindow {
       return event
     }
 
+    mouseMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+    ) { [weak self] event in
+      guard let self = self else { return event }
+      return self.handleMouseEvent(event)
+    }
+
     let center = NotificationCenter.default
+    localObservers.append(
+      center.addObserver(
+        forName: NSWindow.didMoveNotification,
+        object: self,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self = self, self.isOverlayMode, !self.isExpanded else { return }
+        self.collapsedOrigin = self.frame.origin
+      }
+    )
     localObservers.append(
       center.addObserver(
         forName: NSWindow.didResignKeyNotification,
@@ -200,6 +229,9 @@ class MainFlutterWindow: NSWindow {
       }
       moveOrbWindow(dx: CGFloat(dx), dy: CGFloat(dy))
       result(nil)
+    case "startOrbDrag":
+      startOrbDragFromChannel()
+      result(nil)
     case "showMainWindow":
       showMainWindow()
       result(nil)
@@ -237,6 +269,8 @@ class MainFlutterWindow: NSWindow {
 
   private func expandPanelWindow(size: NSSize) {
     configureOverlayWindow()
+    pendingDragEvent = nil
+    pendingDragStartScreenPoint = nil
     if !isExpanded {
       if frame.size == Self.collapsedOrbSize {
         collapsedOrigin = frame.origin
@@ -275,8 +309,96 @@ class MainFlutterWindow: NSWindow {
     }
   }
 
+  private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
+    guard isOverlayMode, !isExpanded, event.window === self else {
+      if event.type == .leftMouseUp {
+        pendingDragEvent = nil
+        pendingDragStartScreenPoint = nil
+      }
+      return event
+    }
+
+    switch event.type {
+    case .leftMouseDown:
+      pendingDragEvent = event
+      pendingDragStartScreenPoint = NSEvent.mouseLocation
+      return event
+
+    case .leftMouseDragged:
+      guard !isNativeDragging,
+            let downEvent = pendingDragEvent,
+            let startPoint = pendingDragStartScreenPoint else {
+        return event
+      }
+      let currentPoint = NSEvent.mouseLocation
+      let distance = hypot(currentPoint.x - startPoint.x, currentPoint.y - startPoint.y)
+      if distance >= Self.dragThreshold {
+        beginNativeDrag(with: downEvent)
+        return nil
+      }
+      return event
+
+    case .leftMouseUp:
+      pendingDragEvent = nil
+      pendingDragStartScreenPoint = nil
+      return event
+
+    default:
+      return event
+    }
+  }
+
+  private func startOrbDragFromChannel() {
+    guard isOverlayMode, !isExpanded, !isNativeDragging else {
+      return
+    }
+    let candidateEvent = pendingDragEvent ?? NSApp.currentEvent
+    guard let dragEvent = candidateEvent,
+          dragEvent.type == .leftMouseDown || dragEvent.type == .leftMouseDragged else {
+      return
+    }
+    beginNativeDrag(with: dragEvent)
+  }
+
+  private func beginNativeDrag(with event: NSEvent) {
+    pendingDragEvent = nil
+    pendingDragStartScreenPoint = nil
+    isNativeDragging = true
+
+    sendSyntheticMouseUpOutsideWindow()
+    performDrag(with: event)
+
+    isNativeDragging = false
+    let clampedFrame = clampFrameToVisibleScreen(frame)
+    if clampedFrame.origin != frame.origin || clampedFrame.size != frame.size {
+      setFrame(clampedFrame, display: true, animate: false)
+    }
+    collapsedOrigin = clampedFrame.origin
+
+    sendSyntheticMouseUpOutsideWindow()
+  }
+
+  private func sendSyntheticMouseUpOutsideWindow() {
+    guard let syntheticUp = NSEvent.mouseEvent(
+      with: .leftMouseUp,
+      location: NSPoint(x: -1000, y: -1000),
+      modifierFlags: [],
+      timestamp: ProcessInfo.processInfo.systemUptime,
+      windowNumber: windowNumber,
+      context: nil,
+      eventNumber: 0,
+      clickCount: 1,
+      pressure: 0
+    ) else {
+      return
+    }
+    flutterViewController?.view.mouseUp(with: syntheticUp)
+  }
+
   private func hideOrbWindow() {
     isExpanded = false
+    pendingDragEvent = nil
+    pendingDragStartScreenPoint = nil
     orderOut(nil)
   }
 

@@ -78,6 +78,7 @@ class _TrackingWindowController extends NoopOrbWindowController {
   int collapsePanelCalls = 0;
   int hideOrbCalls = 0;
   int showMainWindowCalls = 0;
+  int startOrbDragCalls = 0;
   final List<Offset> moveOrbDeltas = <Offset>[];
 
   @override
@@ -98,6 +99,11 @@ class _TrackingWindowController extends NoopOrbWindowController {
   @override
   Future<void> hideOrb() async {
     hideOrbCalls++;
+  }
+
+  @override
+  Future<void> startOrbDrag() async {
+    startOrbDragCalls++;
   }
 
   @override
@@ -550,6 +556,15 @@ void main() {
       expect(find.byKey(OrbButton.orbButtonKey), findsOneWidget);
       expect(find.byKey(DiscordOrbApp.changeChannelButtonKey), findsNothing);
       expect(find.byKey(DiscordOrbApp.openSettingsButtonKey), findsNothing);
+
+      // Dragging the collapsed orb invokes native startOrbDrag once without moveOrbBy spam.
+      await tester.drag(
+        find.byKey(OrbButton.orbButtonKey),
+        const Offset(20, 12),
+      );
+      await tester.pump();
+      expect(windowController.startOrbDragCalls, 1);
+      expect(windowController.moveOrbDeltas, isEmpty);
 
       // Expand viewport to desktop panel window size -> bottom controls appear.
       tester.view.physicalSize = const Size(352, 576);

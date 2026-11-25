@@ -9,6 +9,7 @@ abstract interface class OrbWindowController {
   Future<void> expandPanel(Size size);
   Future<void> collapsePanel();
   Future<void> hideOrb();
+  Future<void> startOrbDrag();
   Future<void> moveOrbBy(Offset delta);
   Future<void> showMainWindow();
   Stream<void> get onLockOrSleep;
@@ -42,6 +43,9 @@ class NoopOrbWindowController implements OrbWindowController {
 
   @override
   Future<void> hideOrb() async {}
+
+  @override
+  Future<void> startOrbDrag() async {}
 
   @override
   Future<void> moveOrbBy(Offset delta) async {}

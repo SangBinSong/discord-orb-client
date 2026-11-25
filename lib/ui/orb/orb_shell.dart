@@ -386,13 +386,19 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     }
   }
 
+  void _handleDragStart(Size viewportSize) {
+    if (_isCollapsedOverlayViewport(viewportSize)) {
+      unawaited(widget.windowController.startOrbDrag());
+    }
+  }
+
   void _handleDragDelta(
     Offset delta,
     Size viewportSize,
     EdgeInsets safePadding,
   ) {
     if (_isCollapsedOverlayViewport(viewportSize)) {
-      unawaited(widget.windowController.moveOrbBy(delta));
+      // Collapsed desktop overlay windows use native OS drag started on pan start.
       return;
     }
     final current = _resolvedOrbOffset(viewportSize, safePadding);
@@ -470,6 +476,7 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
                 isPanelOpen: _isPanelOpen,
                 size: widget.orbSize,
                 onTap: () => _handleOrbTap(viewportSize, safePadding),
+                onDragStart: () => _handleDragStart(viewportSize),
                 onDragDelta: (Offset delta) =>
                     _handleDragDelta(delta, viewportSize, safePadding),
                 onHideRequested: hideOrb,

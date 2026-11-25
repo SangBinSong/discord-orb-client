@@ -29,6 +29,7 @@ void main() {
         case 'expandPanel':
         case 'collapsePanel':
         case 'hideOrb':
+        case 'startOrbDrag':
         case 'moveOrb':
         case 'showMainWindow':
           return null;
@@ -59,10 +60,11 @@ void main() {
       await controller.expandPanel(const Size(360, 440));
       await controller.collapsePanel();
       await controller.hideOrb();
+      await controller.startOrbDrag();
       await controller.moveOrbBy(const Offset(12.5, -8.0));
       await controller.showMainWindow();
 
-      expect(recordedCalls.length, 9);
+      expect(recordedCalls.length, 10);
       expect(recordedCalls[0].method, 'hasOverlayPermission');
       expect(recordedCalls[0].arguments, isNull);
 
@@ -87,14 +89,17 @@ void main() {
       expect(recordedCalls[6].method, 'hideOrb');
       expect(recordedCalls[6].arguments, isNull);
 
-      expect(recordedCalls[7].method, 'moveOrb');
-      expect(recordedCalls[7].arguments, <String, dynamic>{
+      expect(recordedCalls[7].method, 'startOrbDrag');
+      expect(recordedCalls[7].arguments, isNull);
+
+      expect(recordedCalls[8].method, 'moveOrb');
+      expect(recordedCalls[8].arguments, <String, dynamic>{
         'dx': 12.5,
         'dy': -8.0,
       });
 
-      expect(recordedCalls[8].method, 'showMainWindow');
-      expect(recordedCalls[8].arguments, isNull);
+      expect(recordedCalls[9].method, 'showMainWindow');
+      expect(recordedCalls[9].arguments, isNull);
     });
 
     test('emits onLockOrSleep and onPanelDismissRequested from platform calls',

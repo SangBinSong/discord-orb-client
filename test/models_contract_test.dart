@@ -191,6 +191,9 @@ void main() {
       await controller.expandPanel(const Size(360, 420));
       await controller.collapsePanel();
       await controller.hideOrb();
+      await controller.startOrbDrag();
+      await controller.moveOrbBy(const Offset(4, 8));
+      await controller.showMainWindow();
 
       final lockCompleter = Completer<void>();
       final dismissCompleter = Completer<void>();

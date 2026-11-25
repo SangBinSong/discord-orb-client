@@ -50,6 +50,7 @@ void main() {
   group('DesktopOrbWindowController', () {
     test('invokes all window control methods with expected arguments',
         () async {
+      expect(controller.usesNativeWindowDrag, isTrue);
       expect(await controller.hasOverlayPermission(), isTrue);
 
       mockOverlayPermission = false;

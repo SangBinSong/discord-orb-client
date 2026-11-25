@@ -184,6 +184,11 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
         availableHeight < widget.panelSize.height;
   }
 
+  bool _usesNativeDragForViewport(Size viewportSize) {
+    return widget.windowController.usesNativeWindowDrag ||
+        _isCollapsedOverlayViewport(viewportSize);
+  }
+
   Offset _resolvedOrbOffset(Size viewportSize, EdgeInsets safePadding) {
     if (_isCollapsedOverlayViewport(viewportSize)) {
       return Offset(
@@ -193,11 +198,13 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
             .clamp(0.0, double.infinity),
       );
     }
-    final raw = _orbOffset ??
-        Offset(
-          viewportSize.width - safePadding.right - widget.orbSize.width - 16,
-          safePadding.top + 16,
-        );
+    final topRightAnchor = Offset(
+      viewportSize.width - safePadding.right - widget.orbSize.width - 16,
+      safePadding.top + 16,
+    );
+    final raw = widget.windowController.usesNativeWindowDrag
+        ? topRightAnchor
+        : (_orbOffset ?? topRightAnchor);
     return clampOrbOffset(
       offset: raw,
       orbSize: widget.orbSize,
@@ -387,7 +394,7 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
   }
 
   void _handleDragStart(Size viewportSize) {
-    if (_isCollapsedOverlayViewport(viewportSize)) {
+    if (_usesNativeDragForViewport(viewportSize)) {
       unawaited(widget.windowController.startOrbDrag());
     }
   }
@@ -397,8 +404,8 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     Size viewportSize,
     EdgeInsets safePadding,
   ) {
-    if (_isCollapsedOverlayViewport(viewportSize)) {
-      // Collapsed desktop overlay windows use native OS drag started on pan start.
+    if (_usesNativeDragForViewport(viewportSize)) {
+      // Desktop native overlay windows use OS-level dragging started on pan start.
       return;
     }
     final current = _resolvedOrbOffset(viewportSize, safePadding);
@@ -475,6 +482,7 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
               child: OrbButton(
                 isPanelOpen: _isPanelOpen,
                 size: widget.orbSize,
+                showTooltip: !widget.windowController.usesNativeWindowDrag,
                 onTap: () => _handleOrbTap(viewportSize, safePadding),
                 onDragStart: () => _handleDragStart(viewportSize),
                 onDragDelta: (Offset delta) =>

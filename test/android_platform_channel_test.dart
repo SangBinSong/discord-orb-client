@@ -61,6 +61,7 @@ void main() {
       final controller = AndroidOrbWindowController();
       addTearDown(controller.dispose);
 
+      expect(controller.usesNativeWindowDrag, isFalse);
       mockOverlayPermission = true;
       expect(await controller.hasOverlayPermission(), isTrue);
 

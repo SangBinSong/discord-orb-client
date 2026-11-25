@@ -14,6 +14,8 @@ class MainFlutterWindow: NSWindow {
   private var isOverlayMode = false
   private var isExpanded = false
   private var collapsedOrigin: NSPoint?
+  private var lastProgrammaticExpandedOrigin: NSPoint?
+  private var didMoveWhileExpanded = false
   private var keyMonitor: Any?
   private var mouseMonitor: Any?
   private var pendingDragEvent: NSEvent?
@@ -70,6 +72,8 @@ class MainFlutterWindow: NSWindow {
 
   private func configureMainWindow(centerWindow: Bool) {
     isOverlayMode = false
+    lastProgrammaticExpandedOrigin = nil
+    didMoveWhileExpanded = false
     pendingDragEvent = nil
     pendingDragStartScreenPoint = nil
     isNativeDragging = false
@@ -140,8 +144,16 @@ class MainFlutterWindow: NSWindow {
         object: self,
         queue: .main
       ) { [weak self] _ in
-        guard let self = self, self.isOverlayMode, !self.isExpanded else { return }
-        self.collapsedOrigin = self.frame.origin
+        guard let self = self, self.isOverlayMode else { return }
+        if self.isExpanded {
+          if let initialOrigin = self.lastProgrammaticExpandedOrigin,
+             self.frame.origin == initialOrigin {
+            return
+          }
+          self.lastProgrammaticExpandedOrigin = nil
+          self.didMoveWhileExpanded = true
+        }
+        self.syncCollapsedOriginFromCurrentFrame()
       }
     )
     localObservers.append(
@@ -255,12 +267,20 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func showCollapsedOrbWindow() {
+    if isOverlayMode && isExpanded {
+      if didMoveWhileExpanded ||
+          (lastProgrammaticExpandedOrigin != nil && frame.origin != lastProgrammaticExpandedOrigin) {
+        syncCollapsedOriginFromCurrentFrame()
+      }
+    }
     configureOverlayWindow()
     let targetSize = Self.collapsedOrbSize
     let origin = collapsedOrigin ?? defaultCollapsedOrigin(for: targetSize)
     let targetFrame = clampFrameToVisibleScreen(NSRect(origin: origin, size: targetSize))
 
     collapsedOrigin = targetFrame.origin
+    lastProgrammaticExpandedOrigin = nil
+    didMoveWhileExpanded = false
     isExpanded = false
     setFrame(targetFrame, display: true, animate: false)
     invalidateShadow()
@@ -289,6 +309,8 @@ class MainFlutterWindow: NSWindow {
     let clampedFrame = clampFrameToVisibleScreen(desiredFrame)
 
     isExpanded = true
+    didMoveWhileExpanded = false
+    lastProgrammaticExpandedOrigin = clampedFrame.origin
     setFrame(clampedFrame, display: true, animate: false)
     invalidateShadow()
     NSApp.activate(ignoringOtherApps: true)
@@ -304,13 +326,44 @@ class MainFlutterWindow: NSWindow {
     )
     let clampedFrame = clampFrameToVisibleScreen(desiredFrame)
     setFrame(clampedFrame, display: true, animate: false)
-    if !isExpanded {
-      collapsedOrigin = clampedFrame.origin
+    if isExpanded {
+      lastProgrammaticExpandedOrigin = nil
+      didMoveWhileExpanded = true
     }
+    syncCollapsedOriginFromCurrentFrame()
+  }
+
+  private func isPointInOrbDragRegion(_ pointInWindow: NSPoint) -> Bool {
+    if !isExpanded {
+      return true
+    }
+    let width = frame.width
+    let height = frame.height
+    return pointInWindow.x >= width - Self.collapsedOrbSize.width &&
+      pointInWindow.x <= width &&
+      pointInWindow.y >= height - Self.collapsedOrbSize.height &&
+      pointInWindow.y <= height
+  }
+
+  private func syncCollapsedOriginFromCurrentFrame() {
+    guard isOverlayMode else { return }
+    let rawOrigin: NSPoint
+    if isExpanded {
+      rawOrigin = NSPoint(
+        x: frame.maxX - Self.collapsedOrbSize.width,
+        y: frame.maxY - Self.collapsedOrbSize.height
+      )
+    } else {
+      rawOrigin = frame.origin
+    }
+    let clampedOrbFrame = clampFrameToVisibleScreen(
+      NSRect(origin: rawOrigin, size: Self.collapsedOrbSize)
+    )
+    collapsedOrigin = clampedOrbFrame.origin
   }
 
   private func handleMouseEvent(_ event: NSEvent) -> NSEvent? {
-    guard isOverlayMode, !isExpanded, event.window === self else {
+    guard isOverlayMode, event.window === self else {
       if event.type == .leftMouseUp {
         pendingDragEvent = nil
         pendingDragStartScreenPoint = nil
@@ -320,8 +373,13 @@ class MainFlutterWindow: NSWindow {
 
     switch event.type {
     case .leftMouseDown:
-      pendingDragEvent = event
-      pendingDragStartScreenPoint = NSEvent.mouseLocation
+      if isPointInOrbDragRegion(event.locationInWindow) {
+        pendingDragEvent = event
+        pendingDragStartScreenPoint = NSEvent.mouseLocation
+      } else {
+        pendingDragEvent = nil
+        pendingDragStartScreenPoint = nil
+      }
       return event
 
     case .leftMouseDragged:
@@ -349,12 +407,16 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func startOrbDragFromChannel() {
-    guard isOverlayMode, !isExpanded, !isNativeDragging else {
+    guard isOverlayMode, !isNativeDragging else {
       return
     }
     let candidateEvent = pendingDragEvent ?? NSApp.currentEvent
     guard let dragEvent = candidateEvent,
           dragEvent.type == .leftMouseDown || dragEvent.type == .leftMouseDragged else {
+      return
+    }
+    if isExpanded && pendingDragEvent == nil &&
+        !isPointInOrbDragRegion(dragEvent.locationInWindow) {
       return
     }
     beginNativeDrag(with: dragEvent)
@@ -373,7 +435,11 @@ class MainFlutterWindow: NSWindow {
     if clampedFrame.origin != frame.origin || clampedFrame.size != frame.size {
       setFrame(clampedFrame, display: true, animate: false)
     }
-    collapsedOrigin = clampedFrame.origin
+    if isExpanded {
+      lastProgrammaticExpandedOrigin = nil
+      didMoveWhileExpanded = true
+    }
+    syncCollapsedOriginFromCurrentFrame()
 
     sendSyntheticMouseUpOutsideWindow()
   }

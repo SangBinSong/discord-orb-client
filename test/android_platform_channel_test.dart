@@ -75,6 +75,8 @@ void main() {
       await controller.expandPanel(const Size(340, 460));
       await controller.collapsePanel();
       await controller.hideOrb();
+      await controller.moveOrbBy(const Offset(10, 20));
+      await controller.showMainWindow();
 
       expect(
         recordedCalls.map((MethodCall c) => c.method).toList(),

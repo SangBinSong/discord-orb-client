@@ -29,6 +29,8 @@ void main() {
         case 'expandPanel':
         case 'collapsePanel':
         case 'hideOrb':
+        case 'moveOrb':
+        case 'showMainWindow':
           return null;
         default:
           throw MissingPluginException('Unexpected method: ${call.method}');
@@ -57,8 +59,10 @@ void main() {
       await controller.expandPanel(const Size(360, 440));
       await controller.collapsePanel();
       await controller.hideOrb();
+      await controller.moveOrbBy(const Offset(12.5, -8.0));
+      await controller.showMainWindow();
 
-      expect(recordedCalls.length, 7);
+      expect(recordedCalls.length, 9);
       expect(recordedCalls[0].method, 'hasOverlayPermission');
       expect(recordedCalls[0].arguments, isNull);
 
@@ -82,6 +86,15 @@ void main() {
 
       expect(recordedCalls[6].method, 'hideOrb');
       expect(recordedCalls[6].arguments, isNull);
+
+      expect(recordedCalls[7].method, 'moveOrb');
+      expect(recordedCalls[7].arguments, <String, dynamic>{
+        'dx': 12.5,
+        'dy': -8.0,
+      });
+
+      expect(recordedCalls[8].method, 'showMainWindow');
+      expect(recordedCalls[8].arguments, isNull);
     });
 
     test('emits onLockOrSleep and onPanelDismissRequested from platform calls',

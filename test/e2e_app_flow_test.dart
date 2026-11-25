@@ -77,6 +77,8 @@ class _TrackingWindowController extends NoopOrbWindowController {
   int expandPanelCalls = 0;
   int collapsePanelCalls = 0;
   int hideOrbCalls = 0;
+  int showMainWindowCalls = 0;
+  final List<Offset> moveOrbDeltas = <Offset>[];
 
   @override
   Future<void> showCollapsedOrb() async {
@@ -96,6 +98,16 @@ class _TrackingWindowController extends NoopOrbWindowController {
   @override
   Future<void> hideOrb() async {
     hideOrbCalls++;
+  }
+
+  @override
+  Future<void> moveOrbBy(Offset delta) async {
+    moveOrbDeltas.add(delta);
+  }
+
+  @override
+  Future<void> showMainWindow() async {
+    showMainWindowCalls++;
   }
 }
 
@@ -330,6 +342,8 @@ void main() {
       await tester.tap(find.byKey(PanelStatusView.reselectChannelButtonKey));
       await tester.pumpAndSettle();
       expect(find.text('Select Channel'), findsOneWidget);
+      expect(windowController.showMainWindowCalls, greaterThanOrEqualTo(2));
+      expect(windowController.hideOrbCalls, 0);
       expect(find.text('#general'), findsNothing);
       expect(find.text('#updates'), findsOneWidget);
 
@@ -470,6 +484,79 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('No Eligible Channels'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'orb stage hides bottom channel/settings card in collapsed 80x80 window and shows it when expanded',
+    (WidgetTester tester) async {
+      final secureStore = InMemorySecureKeyValueStore();
+      final identityStore = DeviceIdentityStore(
+        store: secureStore,
+        defaultPlatform: OrbPlatform.macos,
+      );
+      await identityStore.configureBackend('https://orb.example.com');
+      await identityStore.saveSelectedChannel(
+        jsonEncode(<String, dynamic>{
+          'guild_id': 'g-1',
+          'guild_name': 'Orb Guild',
+          'channel_id': 'ch-1',
+          'channel_name': 'general',
+        }),
+      );
+      final now = DateTime.now().toUtc();
+      await identityStore.saveSessionTokens(
+        'https://orb.example.com',
+        OrbSessionTokens(
+          accessToken: 'stored-access',
+          refreshToken: 'stored-refresh',
+          accessExpiresAt: now.add(const Duration(minutes: 15)),
+          sessionExpiresAt: now.add(const Duration(days: 30)),
+        ),
+      );
+
+      final windowController = _TrackingWindowController();
+      addTearDown(windowController.dispose);
+
+      final orbHttpClient = OrbHttpClient(
+        inner: MockClient((http.Request request) async {
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'guild_id': 'g-1',
+              'channel_id': 'ch-1',
+              'messages': <dynamic>[],
+            }),
+            200,
+          );
+        }),
+      );
+      addTearDown(orbHttpClient.close);
+
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = const Size(80, 80);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        DiscordOrbApp(
+          platform: OrbPlatform.macos,
+          secureStore: secureStore,
+          httpClient: orbHttpClient,
+          windowController: windowController,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(OrbButton.orbButtonKey), findsOneWidget);
+      expect(find.byKey(DiscordOrbApp.changeChannelButtonKey), findsNothing);
+      expect(find.byKey(DiscordOrbApp.openSettingsButtonKey), findsNothing);
+
+      // Expand viewport to desktop panel window size -> bottom controls appear.
+      tester.view.physicalSize = const Size(352, 576);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(DiscordOrbApp.changeChannelButtonKey), findsOneWidget);
+      expect(find.byKey(DiscordOrbApp.openSettingsButtonKey), findsOneWidget);
     },
   );
 }

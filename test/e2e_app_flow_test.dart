@@ -8,9 +8,12 @@ import 'package:discord_orb/contracts/auth_repository.dart';
 import 'package:discord_orb/contracts/orb_window_controller.dart';
 import 'package:discord_orb/core/device_identity_store.dart';
 import 'package:discord_orb/core/http_client.dart';
+import 'package:discord_orb/models/message_models.dart';
 import 'package:discord_orb/models/session_models.dart';
 import 'package:discord_orb/ui/orb/orb_button.dart';
+import 'package:discord_orb/ui/panel/message_panel.dart';
 import 'package:discord_orb/ui/panel/panel_status_view.dart';
+import 'package:discord_orb/ui/settings/session_settings_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -87,8 +90,9 @@ class _TrackingWindowController extends NoopOrbWindowController {
   }
 
   @override
-  Future<void> expandPanel(Size size) async {
+  Future<OrbPanelExpandDirection> expandPanel(Size size) async {
     expandPanelCalls++;
+    return OrbPanelExpandDirection.below;
   }
 
   @override
@@ -572,6 +576,30 @@ void main() {
 
       expect(find.byKey(DiscordOrbApp.changeChannelButtonKey), findsOneWidget);
       expect(find.byKey(DiscordOrbApp.openSettingsButtonKey), findsOneWidget);
+
+      // Open panel and toggle compact layout in header -> persists and syncs with settings sheet.
+      await tester.tap(find.byKey(OrbButton.orbButtonKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(MessagePanel.layoutToggleButtonKey));
+      await tester.pumpAndSettle();
+      expect(
+        await secureStore.read(DeviceIdentityStore.chatListLayoutKey),
+        'compact',
+      );
+
+      await tester.tap(find.byKey(DiscordOrbApp.openSettingsButtonKey));
+      await tester.pumpAndSettle();
+      final selector = tester.widget<SegmentedButton<ChatListLayout>>(
+        find.byKey(SessionSettingsSheet.layoutSelectorKey),
+      );
+      expect(selector.selected, <ChatListLayout>{ChatListLayout.compact});
+
+      await tester.tap(find.text('Standard'));
+      await tester.pumpAndSettle();
+      expect(
+        await secureStore.read(DeviceIdentityStore.chatListLayoutKey),
+        'standard',
+      );
     },
   );
 }

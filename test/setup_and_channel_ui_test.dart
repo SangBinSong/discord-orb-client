@@ -7,6 +7,7 @@ import 'package:discord_orb/models/message_models.dart';
 import 'package:discord_orb/models/orb_error.dart';
 import 'package:discord_orb/models/session_models.dart';
 import 'package:discord_orb/ui/channels/channel_select_screen.dart';
+import 'package:discord_orb/ui/common/orb_avatar.dart';
 import 'package:discord_orb/ui/settings/session_settings_sheet.dart';
 import 'package:discord_orb/ui/setup/backend_setup_screen.dart';
 import 'package:discord_orb/ui/setup/sign_in_screen.dart';
@@ -33,9 +34,14 @@ class _FakeAuthRepository implements AuthRepository {
   int cancelPendingCalls = 0;
   int signOutCalls = 0;
   int clearBackendStateCalls = 0;
+  int signInCalls = 0;
+  bool? lastLaunchBrowser;
 
   Future<BackendHealthStatus> Function(String url)? onProbe;
-  Future<OrbSessionTokens> Function()? onSignIn;
+  Future<OrbSessionTokens> Function({
+    bool launchBrowser,
+    void Function(Uri authorizationUri)? onAuthorizationUriReady,
+  })? onSignIn;
 
   @override
   String? get backendBaseUrl => _backendBaseUrl;
@@ -66,9 +72,17 @@ class _FakeAuthRepository implements AuthRepository {
   }
 
   @override
-  Future<OrbSessionTokens> signInWithDiscord() async {
+  Future<OrbSessionTokens> signInWithDiscord({
+    bool launchBrowser = true,
+    void Function(Uri authorizationUri)? onAuthorizationUriReady,
+  }) async {
+    signInCalls++;
+    lastLaunchBrowser = launchBrowser;
     if (onSignIn != null) {
-      return onSignIn!();
+      return onSignIn!(
+        launchBrowser: launchBrowser,
+        onAuthorizationUriReady: onAuthorizationUriReady,
+      );
     }
     return OrbSessionTokens(
       accessToken: 'synthetic-access-token',
@@ -282,6 +296,52 @@ void main() {
       expect(authRepo.lastConfiguredDeviceName, 'Pixel Test');
       expect(configuredCount, 1);
     });
+
+    testWidgets(
+      'prefills debug default backend URL only in debug mode when no saved URL exists',
+      (WidgetTester tester) async {
+        expect(
+          BackendSetupScreen.resolveInitialUrl(
+            devDefaultBackendUrl: 'https://dev-preview.example.com',
+            isDebugMode: true,
+          ),
+          'https://dev-preview.example.com',
+        );
+        expect(
+          BackendSetupScreen.resolveInitialUrl(
+            devDefaultBackendUrl: 'https://dev-preview.example.com',
+            isDebugMode: false,
+          ),
+          '',
+        );
+        expect(
+          BackendSetupScreen.resolveInitialUrl(
+            savedBackendUrl: 'https://saved.example.com',
+            devDefaultBackendUrl: 'https://dev-preview.example.com',
+            isDebugMode: true,
+          ),
+          'https://saved.example.com',
+        );
+
+        final authRepo = _FakeAuthRepository();
+        await tester.pumpWidget(
+          _wrapWithApp(
+            BackendSetupScreen(
+              authRepository: authRepo,
+              platform: OrbPlatform.macos,
+              debugDefaultUrlOverride: 'https://dev-preview.example.com',
+              isDebugModeOverride: true,
+              onConfigured: () {},
+            ),
+          ),
+        );
+
+        final urlField = tester.widget<TextField>(
+          find.byKey(const Key('backend_url_field')),
+        );
+        expect(urlField.controller?.text, 'https://dev-preview.example.com');
+      },
+    );
   });
 
   group('SignInScreen', () {
@@ -295,7 +355,11 @@ void main() {
           deviceId: 'synthetic-id',
           platform: OrbPlatform.macos,
         ),
-      )..onSignIn = () => completer.future;
+      )..onSignIn = ({
+          bool launchBrowser = true,
+          void Function(Uri authorizationUri)? onAuthorizationUriReady,
+        }) =>
+            completer.future;
 
       OrbSessionTokens? signedInTokens;
       var changeBackendCalls = 0;
@@ -352,7 +416,10 @@ void main() {
         sessionExpiresAt: DateTime.utc(2026, 12, 20),
       );
       final authRepo = _FakeAuthRepository()
-        ..onSignIn = () async {
+        ..onSignIn = ({
+          bool launchBrowser = true,
+          void Function(Uri authorizationUri)? onAuthorizationUriReady,
+        }) async {
           if (failOnce) {
             throw const OrbException(
               code: 'oauth_failed',
@@ -387,6 +454,89 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(signedInTokens, expectedTokens);
+    });
+
+    testWidgets(
+      'PC shows text-only 링크 복사 button, copies OAuth URI without launching browser or showing raw URL, and completes sign-in',
+      (WidgetTester tester) async {
+        final completer = Completer<OrbSessionTokens>();
+        final copiedTexts = <String>[];
+        final authUri = Uri.parse(
+          'https://orb.example.com/auth/discord/login?state=test-state&code_challenge=abc',
+        );
+        final authRepo = _FakeAuthRepository(
+          initialBackendUrl: 'https://orb.example.com',
+        )..onSignIn = ({
+            bool launchBrowser = true,
+            void Function(Uri authorizationUri)? onAuthorizationUriReady,
+          }) {
+            onAuthorizationUriReady?.call(authUri);
+            return completer.future;
+          };
+
+        OrbSessionTokens? signedInTokens;
+
+        await tester.pumpWidget(
+          _wrapWithApp(
+            SignInScreen(
+              authRepository: authRepo,
+              platform: OrbPlatform.macos,
+              clipboardWriter: (String text) async => copiedTexts.add(text),
+              onSignedIn: (tokens) => signedInTokens = tokens,
+              onChangeBackend: () {},
+            ),
+          ),
+        );
+
+        final copyButtonFinder = find.byKey(SignInScreen.copyLinkButtonKey);
+        expect(copyButtonFinder, findsOneWidget);
+        expect(find.text('링크 복사'), findsOneWidget);
+        expect(tester.widget(copyButtonFinder), isA<TextButton>());
+
+        await tester.tap(copyButtonFinder);
+        await tester.pump();
+
+        expect(authRepo.signInCalls, 1);
+        expect(authRepo.lastLaunchBrowser, isFalse);
+        expect(copiedTexts, <String>[authUri.toString()]);
+        // Raw OAuth URL must NOT be rendered on screen.
+        expect(find.textContaining('code_challenge=abc'), findsNothing);
+
+        // Re-tapping copies active URI without restarting sign-in.
+        await tester.tap(copyButtonFinder);
+        await tester.pump();
+        expect(authRepo.signInCalls, 1);
+        expect(copiedTexts, <String>[authUri.toString(), authUri.toString()]);
+
+        final expectedTokens = OrbSessionTokens(
+          accessToken: 'copied-flow-access',
+          refreshToken: 'copied-flow-refresh',
+          accessExpiresAt: DateTime.utc(2026, 11, 20),
+          sessionExpiresAt: DateTime.utc(2026, 12, 20),
+        );
+        completer.complete(expectedTokens);
+        await tester.pumpAndSettle();
+        expect(signedInTokens, expectedTokens);
+      },
+    );
+
+    testWidgets('hides 링크 복사 button on Android', (WidgetTester tester) async {
+      final authRepo = _FakeAuthRepository(
+        initialBackendUrl: 'https://orb.example.com',
+      );
+      await tester.pumpWidget(
+        _wrapWithApp(
+          SignInScreen(
+            authRepository: authRepo,
+            platform: OrbPlatform.android,
+            onSignedIn: (_) {},
+            onChangeBackend: () {},
+          ),
+        ),
+      );
+
+      expect(find.byKey(SignInScreen.copyLinkButtonKey), findsNothing);
+      expect(find.text('링크 복사'), findsNothing);
     });
   });
 
@@ -442,6 +592,7 @@ void main() {
 
       expect(find.text('Orb Guild'), findsOneWidget);
       expect(find.text('Design Team'), findsOneWidget);
+      expect(find.byType(OrbAvatar), findsNWidgets(2));
       expect(find.text('#general'), findsOneWidget);
       expect(find.text('#announcements'), findsOneWidget);
       expect(find.text('#ui-review'), findsOneWidget);
@@ -558,6 +709,7 @@ void main() {
       var reselectCalls = 0;
       var signedOutCalls = 0;
       var backendChangedCalls = 0;
+      ChatListLayout? changedLayout;
 
       await tester.pumpWidget(
         _wrapWithApp(
@@ -565,6 +717,8 @@ void main() {
             body: SessionSettingsSheet(
               authRepository: authRepo,
               selectedChannel: selectedChannel,
+              chatListLayout: ChatListLayout.standard,
+              onChatListLayoutChanged: (layout) => changedLayout = layout,
               onReselectChannel: () => reselectCalls++,
               onSignedOut: () => signedOutCalls++,
               onBackendChanged: () => backendChangedCalls++,
@@ -576,6 +730,11 @@ void main() {
       expect(find.text('https://orb.example.com'), findsOneWidget);
       expect(find.text('Studio Mac (macOS)'), findsOneWidget);
       expect(find.text('Orb Guild · #general'), findsOneWidget);
+      expect(find.byKey(SessionSettingsSheet.layoutSelectorKey), findsOneWidget);
+
+      await tester.tap(find.text('Compact'));
+      await tester.pump();
+      expect(changedLayout, ChatListLayout.compact);
 
       await tester.tap(find.byKey(const Key('settings_reselect_channel_button')));
       await tester.pump();

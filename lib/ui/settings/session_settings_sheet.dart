@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../contracts/auth_repository.dart';
 import '../../models/channel_models.dart';
+import '../../models/message_models.dart';
 import '../../models/orb_error.dart';
 
 /// Bottom sheet displaying current session details and session management actions.
@@ -13,10 +14,16 @@ class SessionSettingsSheet extends StatefulWidget {
     required this.onSignedOut,
     required this.onBackendChanged,
     this.selectedChannel,
+    this.chatListLayout = ChatListLayout.standard,
+    this.onChatListLayoutChanged,
   });
+
+  static const Key layoutSelectorKey = Key('settings_chat_layout_selector');
 
   final AuthRepository authRepository;
   final EligibleChannel? selectedChannel;
+  final ChatListLayout chatListLayout;
+  final ValueChanged<ChatListLayout>? onChatListLayoutChanged;
   final VoidCallback onReselectChannel;
   final VoidCallback onSignedOut;
   final VoidCallback onBackendChanged;
@@ -28,6 +35,29 @@ class SessionSettingsSheet extends StatefulWidget {
 class _SessionSettingsSheetState extends State<SessionSettingsSheet> {
   bool _isBusy = false;
   String? _errorMessage;
+  late ChatListLayout _selectedLayout;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedLayout = widget.chatListLayout;
+  }
+
+  @override
+  void didUpdateWidget(covariant SessionSettingsSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.chatListLayout != widget.chatListLayout) {
+      _selectedLayout = widget.chatListLayout;
+    }
+  }
+
+  void _handleLayoutSelected(ChatListLayout next) {
+    if (next == _selectedLayout) return;
+    setState(() {
+      _selectedLayout = next;
+    });
+    widget.onChatListLayoutChanged?.call(next);
+  }
 
   Future<void> _handleSignOut() async {
     setState(() {
@@ -108,17 +138,22 @@ class _SessionSettingsSheetState extends State<SessionSettingsSheet> {
           children: <Widget>[
             Row(
               children: <Widget>[
-                Text(
-                  'Session Settings',
-                  style: theme.textTheme.titleLarge,
+                Expanded(
+                  child: Text(
+                    'Session Settings',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleLarge,
+                  ),
                 ),
-                const Spacer(),
-                if (_isBusy)
+                if (_isBusy) ...<Widget>[
+                  const SizedBox(width: 8),
                   const SizedBox(
                     width: 18,
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
+                ],
               ],
             ),
             const SizedBox(height: 16),
@@ -139,6 +174,39 @@ class _SessionSettingsSheetState extends State<SessionSettingsSheet> {
               label: 'Selected Channel',
               value: channelText,
             ),
+            if (widget.onChatListLayoutChanged != null) ...<Widget>[
+              const SizedBox(height: 14),
+              Text(
+                'Message Layout',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<ChatListLayout>(
+                key: SessionSettingsSheet.layoutSelectorKey,
+                segments: const <ButtonSegment<ChatListLayout>>[
+                  ButtonSegment<ChatListLayout>(
+                    value: ChatListLayout.standard,
+                    icon: Icon(Icons.view_agenda_outlined, size: 16),
+                    label: Text('Standard'),
+                  ),
+                  ButtonSegment<ChatListLayout>(
+                    value: ChatListLayout.compact,
+                    icon: Icon(Icons.view_headline_outlined, size: 16),
+                    label: Text('Compact'),
+                  ),
+                ],
+                selected: <ChatListLayout>{_selectedLayout},
+                onSelectionChanged: _isBusy
+                    ? null
+                    : (Set<ChatListLayout> selection) {
+                        if (selection.isNotEmpty) {
+                          _handleLayoutSelected(selection.first);
+                        }
+                      },
+              ),
+            ],
             if (_errorMessage != null) ...<Widget>[
               const SizedBox(height: 14),
               Container(

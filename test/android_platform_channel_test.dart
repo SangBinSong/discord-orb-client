@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:discord_orb/app.dart';
+import 'package:discord_orb/contracts/orb_window_controller.dart';
 import 'package:discord_orb/platform/android_orb_window_controller.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -77,6 +78,7 @@ void main() {
       await controller.collapsePanel();
       await controller.hideOrb();
       await controller.startOrbDrag();
+      await controller.startPanelResize(PanelResizeEdge.bottomRight);
       await controller.moveOrbBy(const Offset(10, 20));
       await controller.showMainWindow();
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../models/message_models.dart';
 import '../../models/orb_error.dart';
+import '../common/orb_avatar.dart';
 import 'message_tile.dart';
 import 'panel_status_view.dart';
 
@@ -14,6 +15,9 @@ class MessagePanel extends StatelessWidget {
     required this.messages,
     this.channelName,
     this.guildName,
+    this.guildIconUrl,
+    this.layout = ChatListLayout.standard,
+    this.onLayoutChanged,
     this.error,
     this.onClose,
     this.onRetry,
@@ -23,12 +27,17 @@ class MessagePanel extends StatelessWidget {
 
   static const int maxVisibleMessages = 10;
   static const Key closeButtonKey = Key('message_panel_close_button');
+  static const Key layoutToggleButtonKey =
+      Key('message_panel_layout_toggle_button');
   static const Key messageListKey = Key('message_panel_list');
 
   final OrbPreviewState state;
   final List<ChannelMessagePreview> messages;
   final String? channelName;
   final String? guildName;
+  final String? guildIconUrl;
+  final ChatListLayout layout;
+  final ValueChanged<ChatListLayout>? onLayoutChanged;
   final OrbException? error;
   final VoidCallback? onClose;
   final VoidCallback? onRetry;
@@ -85,6 +94,9 @@ class MessagePanel extends StatelessWidget {
           _PanelHeader(
             channelName: channelName,
             guildName: guildName,
+            guildIconUrl: guildIconUrl,
+            layout: layout,
+            onLayoutChanged: onLayoutChanged,
             onClose: onClose,
           ),
           Divider(
@@ -96,7 +108,7 @@ class MessagePanel extends StatelessWidget {
             child: effectiveState == OrbPreviewState.loaded
                 ? ListView.separated(
                     key: messageListKey,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    padding: const EdgeInsets.fromLTRB(0, 4, 0, 14),
                     itemCount: visibleMessages.length,
                     separatorBuilder: (BuildContext context, int index) =>
                         Divider(
@@ -107,7 +119,10 @@ class MessagePanel extends StatelessWidget {
                       color: colorScheme.outlineVariant.withValues(alpha: 0.3),
                     ),
                     itemBuilder: (BuildContext context, int index) {
-                      return MessageTile(message: visibleMessages[index]);
+                      return MessageTile(
+                        message: visibleMessages[index],
+                        layout: layout,
+                      );
                     },
                   )
                 : PanelStatusView(
@@ -128,11 +143,17 @@ class _PanelHeader extends StatelessWidget {
   const _PanelHeader({
     this.channelName,
     this.guildName,
+    this.guildIconUrl,
+    required this.layout,
+    this.onLayoutChanged,
     this.onClose,
   });
 
   final String? channelName;
   final String? guildName;
+  final String? guildIconUrl;
+  final ChatListLayout layout;
+  final ValueChanged<ChatListLayout>? onLayoutChanged;
   final VoidCallback? onClose;
 
   @override
@@ -142,17 +163,26 @@ class _PanelHeader extends StatelessWidget {
     final titleText = (channelName != null && channelName!.isNotEmpty)
         ? '#$channelName'
         : 'Channel Preview';
+    final hasGuildBadge = (guildName != null && guildName!.isNotEmpty) ||
+        (guildIconUrl != null && guildIconUrl!.isNotEmpty);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
       child: Row(
         children: <Widget>[
-          Icon(
-            Icons.tag,
-            size: 18,
-            color: colorScheme.primary,
-          ),
-          const SizedBox(width: 6),
+          if (hasGuildBadge)
+            OrbAvatar(
+              name: guildName ?? channelName ?? '#',
+              imageUrl: guildIconUrl,
+              size: 22,
+            )
+          else
+            Icon(
+              Icons.tag,
+              size: 18,
+              color: colorScheme.primary,
+            ),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -178,6 +208,25 @@ class _PanelHeader extends StatelessWidget {
               ],
             ),
           ),
+          if (onLayoutChanged != null)
+            IconButton(
+              key: MessagePanel.layoutToggleButtonKey,
+              tooltip: layout == ChatListLayout.compact
+                  ? 'Switch to standard layout'
+                  : 'Switch to compact layout',
+              icon: Icon(
+                layout == ChatListLayout.compact
+                    ? Icons.view_agenda_outlined
+                    : Icons.view_headline_outlined,
+                size: 18,
+              ),
+              visualDensity: VisualDensity.compact,
+              onPressed: () => onLayoutChanged!(
+                layout == ChatListLayout.compact
+                    ? ChatListLayout.standard
+                    : ChatListLayout.compact,
+              ),
+            ),
           if (onClose != null)
             IconButton(
               key: MessagePanel.closeButtonKey,

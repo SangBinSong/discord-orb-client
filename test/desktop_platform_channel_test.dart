@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:discord_orb/contracts/orb_window_controller.dart';
 import 'package:discord_orb/platform/desktop_orb_window_controller.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,11 +13,13 @@ void main() {
 
   late List<MethodCall> recordedCalls;
   late bool mockOverlayPermission;
+  late Object? mockExpandResult;
   late DesktopOrbWindowController controller;
 
   setUp(() {
     recordedCalls = <MethodCall>[];
     mockOverlayPermission = true;
+    mockExpandResult = null;
 
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (MethodCall call) async {
@@ -24,12 +27,14 @@ void main() {
       switch (call.method) {
         case 'hasOverlayPermission':
           return mockOverlayPermission;
+        case 'expandPanel':
+          return mockExpandResult;
         case 'openOverlayPermissionSettings':
         case 'showCollapsedOrb':
-        case 'expandPanel':
         case 'collapsePanel':
         case 'hideOrb':
         case 'startOrbDrag':
+        case 'startPanelResize':
         case 'moveOrb':
         case 'showMainWindow':
           return null;
@@ -62,10 +67,11 @@ void main() {
       await controller.collapsePanel();
       await controller.hideOrb();
       await controller.startOrbDrag();
+      await controller.startPanelResize(PanelResizeEdge.bottomLeft);
       await controller.moveOrbBy(const Offset(12.5, -8.0));
       await controller.showMainWindow();
 
-      expect(recordedCalls.length, 10);
+      expect(recordedCalls.length, 11);
       expect(recordedCalls[0].method, 'hasOverlayPermission');
       expect(recordedCalls[0].arguments, isNull);
 
@@ -93,14 +99,39 @@ void main() {
       expect(recordedCalls[7].method, 'startOrbDrag');
       expect(recordedCalls[7].arguments, isNull);
 
-      expect(recordedCalls[8].method, 'moveOrb');
+      expect(recordedCalls[8].method, 'startPanelResize');
       expect(recordedCalls[8].arguments, <String, dynamic>{
+        'edge': 'bottomLeft',
+      });
+
+      expect(recordedCalls[9].method, 'moveOrb');
+      expect(recordedCalls[9].arguments, <String, dynamic>{
         'dx': 12.5,
         'dy': -8.0,
       });
 
-      expect(recordedCalls[9].method, 'showMainWindow');
-      expect(recordedCalls[9].arguments, isNull);
+      expect(recordedCalls[10].method, 'showMainWindow');
+      expect(recordedCalls[10].arguments, isNull);
+    });
+
+    test('expandPanel decodes native above/below direction cleanly', () async {
+      mockExpandResult = 'above';
+      expect(
+        await controller.expandPanel(const Size(352, 576)),
+        OrbPanelExpandDirection.above,
+      );
+
+      mockExpandResult = 'below';
+      expect(
+        await controller.expandPanel(const Size(352, 576)),
+        OrbPanelExpandDirection.below,
+      );
+
+      mockExpandResult = null;
+      expect(
+        await controller.expandPanel(const Size(352, 576)),
+        OrbPanelExpandDirection.below,
+      );
     });
 
     test('emits onLockOrSleep and onPanelDismissRequested from platform calls',

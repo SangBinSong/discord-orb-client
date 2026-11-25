@@ -7,6 +7,7 @@
 #include <flutter/method_channel.h>
 
 #include <memory>
+#include <string>
 
 #include "win32_window.h"
 
@@ -36,10 +37,12 @@ class FlutterWindow : public Win32Window {
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
   void ShowMainWindow();
   void ShowCollapsedOrb();
-  void ExpandPanel(double width, double height);
+  std::string ExpandPanel(double width, double height);
   void StartOrbDrag();
+  void StartPanelResize(WPARAM hit_test);
   void MoveOrb(double dx, double dy);
   void HideOrb();
+  LRESULT HitTestResizeEdge(HWND hwnd, POINT screen_pt) const;
   bool IsPointInOrbDragRegion(HWND hwnd, POINT screen_pt) const;
   void SyncCollapsedOriginFromWindow(HWND hwnd);
   void UnregisterSessionNotification();
@@ -62,8 +65,12 @@ class FlutterWindow : public Win32Window {
 
   bool is_overlay_mode_ = false;
   bool is_expanded_ = false;
+  bool expanded_above_ = false;
   bool is_native_dragging_ = false;
   bool did_move_while_expanded_ = false;
+  bool has_persisted_expanded_size_ = false;
+  double persisted_expanded_width_logical_ = 0.0;
+  double persisted_expanded_height_logical_ = 0.0;
   bool has_collapsed_origin_ = false;
   POINT collapsed_origin_{0, 0};
   bool session_notification_registered_ = false;

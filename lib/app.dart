@@ -15,11 +15,13 @@ import 'contracts/preview_repository.dart';
 import 'core/device_identity_store.dart';
 import 'core/http_client.dart';
 import 'models/channel_models.dart';
+import 'models/message_models.dart';
 import 'models/orb_error.dart';
 import 'models/session_models.dart';
 import 'platform/android_orb_window_controller.dart';
 import 'platform/desktop_orb_window_controller.dart';
 import 'ui/channels/channel_select_screen.dart';
+import 'ui/common/orb_avatar.dart';
 import 'ui/orb/orb_shell.dart';
 import 'ui/settings/session_settings_sheet.dart';
 import 'ui/setup/backend_setup_screen.dart';
@@ -140,6 +142,8 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
 
   _AppStage _stage = _AppStage.loading;
   EligibleChannel? _selectedChannel;
+  ChatListLayout _chatListLayout = ChatListLayout.standard;
+  OrbPanelExpandDirection _panelExpandDirection = OrbPanelExpandDirection.below;
 
   @override
   void initState() {
@@ -219,9 +223,11 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
   }
 
   Future<void> _bootstrap() async {
+    final storedLayout = await _identityStore.readChatListLayout();
     final storedTokens = await _authRepository.loadStoredSession();
     final backendUrl = _authRepository.backendBaseUrl;
     if (!mounted) return;
+    _chatListLayout = storedLayout;
 
     if (backendUrl == null) {
       setState(() {
@@ -385,6 +391,23 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
     });
   }
 
+  void _handleChatListLayoutChanged(ChatListLayout next) {
+    if (_chatListLayout != next) {
+      setState(() {
+        _chatListLayout = next;
+      });
+    }
+    unawaited(_identityStore.saveChatListLayout(next));
+  }
+
+  void _handleExpandDirectionChanged(OrbPanelExpandDirection direction) {
+    if (_panelExpandDirection != direction) {
+      setState(() {
+        _panelExpandDirection = direction;
+      });
+    }
+  }
+
   void _openSettingsSheet(BuildContext sheetHostContext) {
     showModalBottomSheet<void>(
       context: sheetHostContext,
@@ -393,6 +416,8 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
         return SessionSettingsSheet(
           authRepository: _authRepository,
           selectedChannel: _selectedChannel,
+          chatListLayout: _chatListLayout,
+          onChatListLayoutChanged: _handleChatListLayoutChanged,
           onReselectChannel: () {
             Navigator.of(modalContext).pop();
             unawaited(_handleReselectChannel());
@@ -441,6 +466,7 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
             case _AppStage.signIn:
               return SignInScreen(
                 authRepository: _authRepository,
+                platform: _platform,
                 onSignedIn: _handleSignedIn,
                 onChangeBackend: () => unawaited(_handleChangeBackendFromSignIn()),
               );
@@ -455,6 +481,10 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
               );
             case _AppStage.orb:
               final channel = _selectedChannel;
+              final controlsAlignment =
+                  _panelExpandDirection == OrbPanelExpandDirection.above
+                      ? Alignment.topLeft
+                      : Alignment.bottomLeft;
               return Scaffold(
                 backgroundColor: Colors.transparent,
                 body: LayoutBuilder(
@@ -466,19 +496,30 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
                         if (showControlsBar)
                           SafeArea(
                             child: Padding(
-                              padding: const EdgeInsets.all(16),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 10,
+                              ),
                               child: Align(
-                                alignment: Alignment.bottomLeft,
+                                alignment: controlsAlignment,
                                 child: Card(
+                                  margin: EdgeInsets.zero,
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 8,
+                                      horizontal: 10,
+                                      vertical: 4,
                                     ),
                                     child: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: <Widget>[
-                                        const Icon(Icons.tag, size: 16),
+                                        if (channel != null)
+                                          OrbAvatar(
+                                            name: channel.guildName,
+                                            imageUrl: channel.guildIconUrl,
+                                            size: 20,
+                                          )
+                                        else
+                                          const Icon(Icons.tag, size: 16),
                                         const SizedBox(width: 6),
                                         Flexible(
                                           child: Text(
@@ -488,12 +529,16 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
                                             overflow: TextOverflow.ellipsis,
                                           ),
                                         ),
-                                        const SizedBox(width: 8),
+                                        const SizedBox(width: 6),
                                         IconButton(
                                           key: DiscordOrbApp
                                               .changeChannelButtonKey,
                                           tooltip: 'Change channel',
-                                          icon: const Icon(Icons.swap_horiz),
+                                          visualDensity: VisualDensity.compact,
+                                          icon: const Icon(
+                                            Icons.swap_horiz,
+                                            size: 20,
+                                          ),
                                           onPressed: () => unawaited(
                                             _handleReselectChannel(),
                                           ),
@@ -502,8 +547,10 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
                                           key: DiscordOrbApp
                                               .openSettingsButtonKey,
                                           tooltip: 'Session settings',
+                                          visualDensity: VisualDensity.compact,
                                           icon: const Icon(
                                             Icons.settings_outlined,
+                                            size: 20,
                                           ),
                                           onPressed: () =>
                                               _openSettingsSheet(homeContext),
@@ -524,6 +571,12 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
                             channelId: channel?.channelId,
                             channelName: channel?.channelName,
                             guildName: channel?.guildName,
+                            guildIconUrl: channel?.guildIconUrl,
+                            chatListLayout: _chatListLayout,
+                            onChatListLayoutChanged:
+                                _handleChatListLayoutChanged,
+                            onExpandDirectionChanged:
+                                _handleExpandDirectionChanged,
                             onReauthenticate: () =>
                                 unawaited(_handleReauthenticate()),
                             onReselectChannel: () =>

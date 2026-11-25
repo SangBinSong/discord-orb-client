@@ -112,7 +112,10 @@ class AuthRepositoryImpl implements AuthRepository {
   }
 
   @override
-  Future<OrbSessionTokens> signInWithDiscord() async {
+  Future<OrbSessionTokens> signInWithDiscord({
+    bool launchBrowser = true,
+    void Function(Uri authorizationUri)? onAuthorizationUriReady,
+  }) async {
     final backendUrl = await _requireBackendUrl();
     final identity = _currentDeviceIdentity ??
         await _identityStore.getOrCreateDeviceIdentity(
@@ -130,11 +133,15 @@ class AuthRepositoryImpl implements AuthRepository {
       callbackResult = await _signInViaSchemeListener(
         backendUrl: backendUrl,
         pkce: pkce,
+        launchBrowser: launchBrowser,
+        onAuthorizationUriReady: onAuthorizationUriReady,
       );
     } else {
       callbackResult = await _signInViaLoopbackListener(
         backendUrl: backendUrl,
         pkce: pkce,
+        launchBrowser: launchBrowser,
+        onAuthorizationUriReady: onAuthorizationUriReady,
       );
     }
 
@@ -258,6 +265,8 @@ class AuthRepositoryImpl implements AuthRepository {
   Future<OAuthCallbackResult> _signInViaLoopbackListener({
     required String backendUrl,
     required PkcePair pkce,
+    required bool launchBrowser,
+    void Function(Uri authorizationUri)? onAuthorizationUriReady,
   }) async {
     final listener = _loopbackListenerFactory();
     _activeSignInCancel = listener.cancel;
@@ -272,21 +281,24 @@ class AuthRepositoryImpl implements AuthRepository {
         timeout: _oauthTimeout,
         expectedState: pkce.state,
       );
-      try {
-        await _browserLauncher.launch(loginUri);
-      } catch (error) {
-        await listener.cancel();
-        // Drain waitFuture error if launch failed so no unhandled error escapes.
-        await waitFuture.catchError((Object _) => const OAuthCallbackResult(
-              ticket: '',
-              state: '',
-            ));
-        if (error is OrbException) rethrow;
-        throw OrbException(
-          code: 'browser_launch_failed',
-          message: 'Failed to launch system browser for OAuth: $error',
-          state: OrbPreviewState.networkError,
-        );
+      onAuthorizationUriReady?.call(loginUri);
+      if (launchBrowser) {
+        try {
+          await _browserLauncher.launch(loginUri);
+        } catch (error) {
+          await listener.cancel();
+          // Drain waitFuture error if launch failed so no unhandled error escapes.
+          await waitFuture.catchError((Object _) => const OAuthCallbackResult(
+                ticket: '',
+                state: '',
+              ));
+          if (error is OrbException) rethrow;
+          throw OrbException(
+            code: 'browser_launch_failed',
+            message: 'Failed to launch system browser for OAuth: $error',
+            state: OrbPreviewState.networkError,
+          );
+        }
       }
       return await waitFuture;
     } finally {
@@ -300,6 +312,8 @@ class AuthRepositoryImpl implements AuthRepository {
   Future<OAuthCallbackResult> _signInViaSchemeListener({
     required String backendUrl,
     required PkcePair pkce,
+    required bool launchBrowser,
+    void Function(Uri authorizationUri)? onAuthorizationUriReady,
   }) async {
     _activeSignInCancel = _schemeListener.cancel;
     try {
@@ -312,20 +326,23 @@ class AuthRepositoryImpl implements AuthRepository {
         timeout: _oauthTimeout,
         expectedState: pkce.state,
       );
-      try {
-        await _browserLauncher.launch(loginUri);
-      } catch (error) {
-        await _schemeListener.cancel();
-        await waitFuture.catchError((Object _) => const OAuthCallbackResult(
-              ticket: '',
-              state: '',
-            ));
-        if (error is OrbException) rethrow;
-        throw OrbException(
-          code: 'browser_launch_failed',
-          message: 'Failed to launch system browser for OAuth: $error',
-          state: OrbPreviewState.networkError,
-        );
+      onAuthorizationUriReady?.call(loginUri);
+      if (launchBrowser) {
+        try {
+          await _browserLauncher.launch(loginUri);
+        } catch (error) {
+          await _schemeListener.cancel();
+          await waitFuture.catchError((Object _) => const OAuthCallbackResult(
+                ticket: '',
+                state: '',
+              ));
+          if (error is OrbException) rethrow;
+          throw OrbException(
+            code: 'browser_launch_failed',
+            message: 'Failed to launch system browser for OAuth: $error',
+            state: OrbPreviewState.networkError,
+          );
+        }
       }
       return await waitFuture;
     } finally {

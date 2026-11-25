@@ -1,16 +1,50 @@
 import 'dart:async';
 import 'dart:ui';
 
+/// Vertical direction in which the native overlay panel expanded relative to the orb.
+enum OrbPanelExpandDirection {
+  below,
+  above;
+
+  static OrbPanelExpandDirection fromWireValue(Object? raw) {
+    if (raw is String && raw.trim().toLowerCase() == 'above') {
+      return OrbPanelExpandDirection.above;
+    }
+    if (raw is Map<Object?, Object?>) {
+      final dir = raw['direction'];
+      if (dir is String && dir.trim().toLowerCase() == 'above') {
+        return OrbPanelExpandDirection.above;
+      }
+    }
+    return OrbPanelExpandDirection.below;
+  }
+}
+
+/// Edges and corners of the expanded panel that can be dragged to resize it.
+enum PanelResizeEdge {
+  left,
+  right,
+  top,
+  bottom,
+  topLeft,
+  topRight,
+  bottomLeft,
+  bottomRight;
+
+  String get wireName => name;
+}
+
 /// Platform window/overlay controller for the floating Discord Orb and panel.
 abstract interface class OrbWindowController {
   bool get usesNativeWindowDrag => false;
   Future<bool> hasOverlayPermission();
   Future<void> openOverlayPermissionSettings();
   Future<void> showCollapsedOrb();
-  Future<void> expandPanel(Size size);
+  Future<OrbPanelExpandDirection> expandPanel(Size size);
   Future<void> collapsePanel();
   Future<void> hideOrb();
   Future<void> startOrbDrag();
+  Future<void> startPanelResize(PanelResizeEdge edge);
   Future<void> moveOrbBy(Offset delta);
   Future<void> showMainWindow();
   Stream<void> get onLockOrSleep;
@@ -40,7 +74,8 @@ class NoopOrbWindowController implements OrbWindowController {
   Future<void> showCollapsedOrb() async {}
 
   @override
-  Future<void> expandPanel(Size size) async {}
+  Future<OrbPanelExpandDirection> expandPanel(Size size) async =>
+      OrbPanelExpandDirection.below;
 
   @override
   Future<void> collapsePanel() async {}
@@ -50,6 +85,9 @@ class NoopOrbWindowController implements OrbWindowController {
 
   @override
   Future<void> startOrbDrag() async {}
+
+  @override
+  Future<void> startPanelResize(PanelResizeEdge edge) async {}
 
   @override
   Future<void> moveOrbBy(Offset delta) async {}

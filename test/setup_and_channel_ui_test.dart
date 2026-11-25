@@ -127,6 +127,14 @@ class _FakePreviewRepository implements PreviewRepository {
   }
 
   @override
+  Stream<ChannelMessageEvent> subscribeToChannelMessages({
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+  }) =>
+      const Stream<ChannelMessageEvent>.empty();
+
+  @override
   void cancelActivePreview() {}
 
   @override

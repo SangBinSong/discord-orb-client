@@ -63,11 +63,25 @@ class _RecordingWindowController extends NoopOrbWindowController {
 
 class _FakePreviewRepository implements PreviewRepository {
   final List<Object> capturedTokens = <Object>[];
+  final List<({String guildId, String channelId})> subscribedChannels =
+      <({String guildId, String channelId})>[];
+  final List<StreamController<ChannelMessageEvent>> _activeStreamControllers =
+      <StreamController<ChannelMessageEvent>>[];
+
   int fetchCalls = 0;
+  int subscribeCalls = 0;
+  int streamCancelCalls = 0;
   int cancelCalls = 0;
   int clearMemoryCalls = 0;
 
+  int get activeStreamCount => _activeStreamControllers.length;
+
   Future<List<ChannelMessagePreview>> Function(Object requestToken)? onFetch;
+  Stream<ChannelMessageEvent> Function({
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+  })? onSubscribe;
 
   @override
   Future<List<EligibleGuild>> fetchEligibleGuilds() async =>
@@ -88,6 +102,45 @@ class _FakePreviewRepository implements PreviewRepository {
     return Future<List<ChannelMessagePreview>>.value(
       const <ChannelMessagePreview>[],
     );
+  }
+
+  @override
+  Stream<ChannelMessageEvent> subscribeToChannelMessages({
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+  }) {
+    subscribeCalls += 1;
+    subscribedChannels.add((guildId: guildId, channelId: channelId));
+    final handler = onSubscribe;
+    if (handler != null) {
+      return handler(
+        guildId: guildId,
+        channelId: channelId,
+        requestToken: requestToken,
+      );
+    }
+    late final StreamController<ChannelMessageEvent> controller;
+    controller = StreamController<ChannelMessageEvent>(
+      onCancel: () {
+        streamCancelCalls += 1;
+        _activeStreamControllers.remove(controller);
+        if (!controller.isClosed) {
+          unawaited(controller.close());
+        }
+      },
+    );
+    _activeStreamControllers.add(controller);
+    return controller.stream;
+  }
+
+  void emitEvent(ChannelMessageEvent event) {
+    for (final controller
+        in List<StreamController<ChannelMessageEvent>>.of(_activeStreamControllers)) {
+      if (!controller.isClosed) {
+        controller.add(event);
+      }
+    }
   }
 
   @override
@@ -118,6 +171,8 @@ Widget _wrapShell({
   Offset? initialOrbOffset,
   String? guildId = 'guild-1',
   String? channelId = 'channel-1',
+  Duration streamReconnectBaseDelay = const Duration(seconds: 1),
+  Duration streamReconnectMaxDelay = const Duration(seconds: 30),
   VoidCallback? onReauthenticate,
   VoidCallback? onReselectChannel,
 }) {
@@ -136,6 +191,8 @@ Widget _wrapShell({
             channelName: 'general',
             guildName: 'Orb Guild',
             initialOrbOffset: initialOrbOffset,
+            streamReconnectBaseDelay: streamReconnectBaseDelay,
+            streamReconnectMaxDelay: streamReconnectMaxDelay,
             onReauthenticate: onReauthenticate,
             onReselectChannel: onReselectChannel,
           ),
@@ -619,5 +676,258 @@ void main() {
       expect(find.byType(MessageTile), findsNothing);
       expect(find.text('Message body 99'), findsNothing);
     });
+  });
+
+  group('OrbShell real-time SSE streaming', () {
+    testWidgets(
+      'subscribes only while open, merges create/update/delete live, and cancels immediately on close',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController();
+        final controller = OrbShellController();
+        repo.onFetch = (_) async => <ChannelMessagePreview>[
+              _msg(1, timestamp: DateTime.utc(2026, 11, 25, 12, 1)),
+              _msg(2, timestamp: DateTime.utc(2026, 11, 25, 12, 2)),
+            ];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+          ),
+        );
+
+        // Panel is closed -> must NOT subscribe to SSE.
+        expect(repo.subscribeCalls, 0);
+        expect(repo.activeStreamCount, 0);
+
+        // Open panel -> loads initial REST messages and starts SSE stream.
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+
+        expect(repo.subscribeCalls, 1);
+        expect(repo.activeStreamCount, 1);
+        expect(controller.messages.map((m) => m.id), <String>['msg_2', 'msg_1']);
+
+        // 1. Live message_create (and duplicate ID dedup)
+        repo.emitEvent(
+          ChannelMessageEvent.create(
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+            message: _msg(3, timestamp: DateTime.utc(2026, 11, 25, 12, 5)),
+          ),
+        );
+        repo.emitEvent(
+          ChannelMessageEvent.create(
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+            message: ChannelMessagePreview(
+              id: 'msg_3',
+              authorName: 'User 3',
+              timestamp: DateTime.utc(2026, 11, 25, 12, 5),
+              content: 'Message body 3 deduped',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(controller.messages.map((m) => m.id), <String>[
+          'msg_3',
+          'msg_2',
+          'msg_1',
+        ]);
+        expect(find.text('Message body 3 deduped'), findsOneWidget);
+
+        // 2. Partial message_update preserves original author and timestamp
+        repo.emitEvent(
+          const ChannelMessageEvent.update(
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+            messageId: 'msg_2',
+            content: 'Edited body 2',
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Edited body 2'), findsOneWidget);
+        expect(find.text('User 2'), findsOneWidget);
+
+        // 3. message_delete removes message; deleting all transitions to emptyChannel
+        repo.emitEvent(
+          const ChannelMessageEvent.delete(
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+            messageId: 'msg_3',
+          ),
+        );
+        repo.emitEvent(
+          const ChannelMessageEvent.delete(
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+            messageId: 'msg_2',
+          ),
+        );
+        repo.emitEvent(
+          const ChannelMessageEvent.delete(
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+            messageId: 'msg_1',
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(controller.previewState, OrbPreviewState.emptyChannel);
+        expect(controller.messages, isEmpty);
+
+        // Close panel -> immediately cancels stream & wipes memory.
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pump();
+
+        expect(controller.isPanelOpen, isFalse);
+        expect(repo.activeStreamCount, 0);
+        expect(repo.streamCancelCalls, 1);
+        expect(repo.clearMemoryCalls, 1);
+      },
+    );
+
+    testWidgets(
+      'cancels stream and clears messages on channel switch and detached lifecycle',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController();
+        final controller = OrbShellController();
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1)];
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+          ),
+        );
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+        expect(repo.subscribeCalls, 1);
+        expect(repo.subscribedChannels.last.channelId, 'channel-1');
+        expect(repo.activeStreamCount, 1);
+
+        // Switch channel while panel is open -> old stream cancelled, memory wiped, new channel subscribed.
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(20)];
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            guildId: 'guild-1',
+            channelId: 'channel-2',
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(repo.streamCancelCalls, 1);
+        expect(repo.clearMemoryCalls, 1);
+        expect(repo.subscribeCalls, 2);
+        expect(repo.subscribedChannels.last.channelId, 'channel-2');
+        expect(find.text('Message body 1'), findsNothing);
+        expect(find.text('Message body 20'), findsOneWidget);
+
+        // Detached lifecycle -> closes panel, cancels stream, wipes memory.
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.detached,
+        );
+        await tester.pump();
+
+        expect(controller.isPanelOpen, isFalse);
+        expect(controller.messages, isEmpty);
+        expect(repo.activeStreamCount, 0);
+        expect(repo.streamCancelCalls, 2);
+      },
+    );
+
+    testWidgets(
+      'reconnects with backoff on transient stream disconnect and stops on fail-closed 403',
+      (WidgetTester tester) async {
+        final repo = _FakePreviewRepository();
+        final window = _RecordingWindowController();
+        final controller = OrbShellController();
+        repo.onFetch = (_) async => <ChannelMessagePreview>[_msg(1)];
+
+        var attempt = 0;
+        late StreamController<ChannelMessageEvent> firstStream;
+        late StreamController<ChannelMessageEvent> secondStream;
+        late StreamController<ChannelMessageEvent> thirdStream;
+        repo.onSubscribe = ({
+          required String guildId,
+          required String channelId,
+          required Object requestToken,
+        }) {
+          attempt += 1;
+          if (attempt == 1) {
+            firstStream = StreamController<ChannelMessageEvent>();
+            return firstStream.stream;
+          }
+          if (attempt == 2) {
+            secondStream = StreamController<ChannelMessageEvent>();
+            return secondStream.stream;
+          }
+          thirdStream = StreamController<ChannelMessageEvent>();
+          return thirdStream.stream;
+        };
+
+        await tester.pumpWidget(
+          _wrapShell(
+            previewRepository: repo,
+            windowController: window,
+            controller: controller,
+            streamReconnectBaseDelay: const Duration(milliseconds: 50),
+            streamReconnectMaxDelay: const Duration(milliseconds: 200),
+          ),
+        );
+
+        await tester.tap(find.byKey(OrbButton.orbButtonKey));
+        await tester.pumpAndSettle();
+        expect(repo.subscribeCalls, 1);
+
+        // Drop first stream cleanly -> reconnect scheduled after 50ms.
+        await firstStream.close();
+        await tester.pump(const Duration(milliseconds: 40));
+        expect(repo.subscribeCalls, 1);
+        await tester.pump(const Duration(milliseconds: 20));
+        expect(repo.subscribeCalls, 2);
+
+        // Second stream receives live message after reconnect.
+        secondStream.add(
+          ChannelMessageEvent.create(
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+            message: _msg(42, timestamp: DateTime.utc(2026, 11, 25, 13, 0)),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Message body 42'), findsOneWidget);
+
+        // Fail-closed 403 error on stream -> wipes messages immediately and does NOT reconnect.
+        secondStream.addError(
+          const OrbException(
+            code: 'access_denied',
+            message: 'Access revoked',
+            state: OrbPreviewState.accessDenied,
+            statusCode: 403,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(controller.previewState, OrbPreviewState.accessDenied);
+        expect(controller.messages, isEmpty);
+        expect(find.text('Message body 42'), findsNothing);
+
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(repo.subscribeCalls, 2);
+
+        unawaited(secondStream.close());
+      },
+    );
   });
 }

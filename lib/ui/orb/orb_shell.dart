@@ -53,6 +53,8 @@ class OrbShell extends StatefulWidget {
     this.initialOrbOffset,
     this.safePadding = EdgeInsets.zero,
     this.showRestoreChipWhenHidden = true,
+    this.streamReconnectBaseDelay = const Duration(seconds: 1),
+    this.streamReconnectMaxDelay = const Duration(seconds: 30),
     this.onReauthenticate,
     this.onReselectChannel,
   });
@@ -71,6 +73,8 @@ class OrbShell extends StatefulWidget {
   final Offset? initialOrbOffset;
   final EdgeInsets safePadding;
   final bool showRestoreChipWhenHidden;
+  final Duration streamReconnectBaseDelay;
+  final Duration streamReconnectMaxDelay;
   final VoidCallback? onReauthenticate;
   final VoidCallback? onReselectChannel;
 
@@ -81,6 +85,9 @@ class OrbShell extends StatefulWidget {
 class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
   StreamSubscription<void>? _lockSubscription;
   StreamSubscription<void>? _dismissSubscription;
+  StreamSubscription<ChannelMessageEvent>? _messageStreamSubscription;
+  Timer? _streamReconnectTimer;
+  int _streamReconnectAttempts = 0;
 
   Offset? _orbOffset;
   bool _isOrbHidden = false;
@@ -117,12 +124,32 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
       _unsubscribeFromWindowEvents();
       _subscribeToWindowEvents();
     }
+    if (oldWidget.guildId != widget.guildId ||
+        oldWidget.channelId != widget.channelId) {
+      _cancelStreamSubscription();
+      widget.previewRepository.clearMemory();
+      widget.previewRepository.cancelActivePreview();
+      if (_isPanelOpen) {
+        final requestToken = Object();
+        _activeRequestToken = requestToken;
+        _previewState = OrbPreviewState.loading;
+        _messages = const <ChannelMessagePreview>[];
+        _error = null;
+        _fetchWithToken(requestToken);
+      } else {
+        _activeRequestToken = null;
+        _messages = const <ChannelMessagePreview>[];
+        _error = null;
+      }
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _unsubscribeFromWindowEvents();
+    _cancelStreamSubscription();
+    widget.previewRepository.cancelActivePreview();
     widget.controller?._detach(this);
     _activeRequestToken = null;
     _messages = const <ChannelMessagePreview>[];
@@ -133,7 +160,8 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
       closeAndClear();
     }
   }
@@ -233,6 +261,7 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
   }
 
   void _openAndFetch(Size targetPanelSize) {
+    _cancelStreamSubscription();
     final requestToken = Object();
     setState(() {
       _isPanelOpen = true;
@@ -250,6 +279,7 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     if (!_isPanelOpen) {
       return;
     }
+    _cancelStreamSubscription();
     final requestToken = Object();
     setState(() {
       _previewState = OrbPreviewState.loading;
@@ -302,6 +332,11 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
         }
         _error = null;
       });
+      _startMessageStream(
+        guildId: guildId,
+        channelId: channelId,
+        requestToken: requestToken,
+      );
     } on OrbException catch (e) {
       if (!mounted ||
           !_isPanelOpen ||
@@ -327,11 +362,177 @@ class OrbShellState extends State<OrbShell> with WidgetsBindingObserver {
     }
   }
 
+  void _startMessageStream({
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+  }) {
+    if (!mounted ||
+        !_isPanelOpen ||
+        !identical(_activeRequestToken, requestToken)) {
+      return;
+    }
+    _streamReconnectTimer?.cancel();
+    _streamReconnectTimer = null;
+    final previous = _messageStreamSubscription;
+    _messageStreamSubscription = null;
+    if (previous != null) {
+      unawaited(previous.cancel());
+    }
+
+    final stream = widget.previewRepository.subscribeToChannelMessages(
+      guildId: guildId,
+      channelId: channelId,
+      requestToken: requestToken,
+    );
+
+    _messageStreamSubscription = stream.listen(
+      (ChannelMessageEvent event) => _handleStreamEvent(event, requestToken),
+      onError: (Object error, StackTrace _) => _handleStreamError(
+        error,
+        guildId: guildId,
+        channelId: channelId,
+        requestToken: requestToken,
+      ),
+      onDone: () {
+        if (!mounted ||
+            !_isPanelOpen ||
+            !identical(_activeRequestToken, requestToken)) {
+          return;
+        }
+        _messageStreamSubscription = null;
+        _scheduleStreamReconnect(
+          guildId: guildId,
+          channelId: channelId,
+          requestToken: requestToken,
+        );
+      },
+      cancelOnError: true,
+    );
+  }
+
+  void _handleStreamEvent(ChannelMessageEvent event, Object requestToken) {
+    if (!mounted ||
+        !_isPanelOpen ||
+        !identical(_activeRequestToken, requestToken)) {
+      return;
+    }
+    _streamReconnectAttempts = 0;
+    if (event.type == ChannelMessageEventType.ready) {
+      return;
+    }
+    final merged = mergeChannelMessageEvent(
+      _messages,
+      event,
+      maxMessages: MessagePanel.maxVisibleMessages,
+    );
+    setState(() {
+      _messages = merged;
+      _previewState = merged.isEmpty
+          ? OrbPreviewState.emptyChannel
+          : OrbPreviewState.loaded;
+      _error = null;
+    });
+  }
+
+  void _handleStreamError(
+    Object error, {
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+  }) {
+    if (!mounted ||
+        !_isPanelOpen ||
+        !identical(_activeRequestToken, requestToken)) {
+      return;
+    }
+    _messageStreamSubscription = null;
+
+    if (error is OrbException) {
+      if (error.code == 'preview_cancelled') {
+        return;
+      }
+      if (error.state == OrbPreviewState.sessionExpired ||
+          error.state == OrbPreviewState.accessDenied ||
+          error.state == OrbPreviewState.botUnavailable) {
+        _cancelStreamSubscription();
+        widget.previewRepository.clearMemory();
+        setState(() {
+          _previewState = error.state;
+          _messages = const <ChannelMessagePreview>[];
+          _error = error;
+        });
+        return;
+      }
+      _scheduleStreamReconnect(
+        guildId: guildId,
+        channelId: channelId,
+        requestToken: requestToken,
+        minDelay: error.retryAfter,
+      );
+      return;
+    }
+
+    _scheduleStreamReconnect(
+      guildId: guildId,
+      channelId: channelId,
+      requestToken: requestToken,
+    );
+  }
+
+  void _scheduleStreamReconnect({
+    required String guildId,
+    required String channelId,
+    required Object requestToken,
+    Duration? minDelay,
+  }) {
+    if (!mounted ||
+        !_isPanelOpen ||
+        !identical(_activeRequestToken, requestToken) ||
+        _streamReconnectTimer != null) {
+      return;
+    }
+    final attempt = _streamReconnectAttempts.clamp(0, 10);
+    _streamReconnectAttempts += 1;
+    final multiplier = 1 << attempt;
+    final rawMs = widget.streamReconnectBaseDelay.inMilliseconds * multiplier;
+    final maxMs = widget.streamReconnectMaxDelay.inMilliseconds;
+    var delayMs = rawMs > maxMs ? maxMs : rawMs;
+    if (minDelay != null && minDelay.inMilliseconds > delayMs) {
+      delayMs = minDelay.inMilliseconds > maxMs ? maxMs : minDelay.inMilliseconds;
+    }
+    _streamReconnectTimer = Timer(Duration(milliseconds: delayMs), () {
+      _streamReconnectTimer = null;
+      if (!mounted ||
+          !_isPanelOpen ||
+          !identical(_activeRequestToken, requestToken)) {
+        return;
+      }
+      _startMessageStream(
+        guildId: guildId,
+        channelId: channelId,
+        requestToken: requestToken,
+      );
+    });
+  }
+
+  void _cancelStreamSubscription() {
+    _streamReconnectTimer?.cancel();
+    _streamReconnectTimer = null;
+    _streamReconnectAttempts = 0;
+    final sub = _messageStreamSubscription;
+    _messageStreamSubscription = null;
+    if (sub != null) {
+      unawaited(sub.cancel());
+    }
+  }
+
   /// Closes the panel if open, invalidates any in-flight request, and wipes
   /// all in-memory preview messages.
   void closeAndClear() {
     final wasOpen = _isPanelOpen;
     _activeRequestToken = null;
+    _cancelStreamSubscription();
     widget.previewRepository.clearMemory();
     widget.previewRepository.cancelActivePreview();
     if (wasOpen) {

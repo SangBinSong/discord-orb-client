@@ -33,28 +33,16 @@ class PanelStatusView extends StatelessWidget {
 
     if (state == OrbPreviewState.loading) {
       return Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(
-                  key: loadingIndicatorKey,
-                  strokeWidth: 2.5,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Loading latest messages...',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
+        child: Semantics(
+          label: 'Loading messages',
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              key: loadingIndicatorKey,
+              strokeWidth: 2.2,
+              color: colorScheme.primary.withValues(alpha: 0.78),
+            ),
           ),
         ),
       );

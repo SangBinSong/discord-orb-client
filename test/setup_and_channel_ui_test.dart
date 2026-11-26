@@ -717,7 +717,12 @@ void main() {
       var reselectCalls = 0;
       var signedOutCalls = 0;
       var backendChangedCalls = 0;
+      var quitAppCalls = 0;
       ChatListLayout? changedLayout;
+      bool? changedPinned;
+      bool? changedToast;
+      int? changedMaxToasts;
+      ChatListLayout? changedToastLayout;
 
       await tester.pumpWidget(
         _wrapWithApp(
@@ -727,9 +732,19 @@ void main() {
               selectedChannel: selectedChannel,
               chatListLayout: ChatListLayout.standard,
               onChatListLayoutChanged: (layout) => changedLayout = layout,
+              isPanelPinned: true,
+              onPanelPinnedChanged: (pinned) => changedPinned = pinned,
+              toastNotificationsEnabled: true,
+              onToastNotificationsChanged: (enabled) => changedToast = enabled,
+              maxVisibleToastCount: 3,
+              onMaxVisibleToastCountChanged: (count) =>
+                  changedMaxToasts = count,
+              toastLayout: ChatListLayout.standard,
+              onToastLayoutChanged: (layout) => changedToastLayout = layout,
               onReselectChannel: () => reselectCalls++,
               onSignedOut: () => signedOutCalls++,
               onBackendChanged: () => backendChangedCalls++,
+              onQuitApp: () => quitAppCalls++,
             ),
           ),
         ),
@@ -739,10 +754,86 @@ void main() {
       expect(find.text('Studio Mac (macOS)'), findsOneWidget);
       expect(find.text('Orb Guild · #general'), findsOneWidget);
       expect(find.byKey(SessionSettingsSheet.layoutSelectorKey), findsOneWidget);
+      expect(
+        find.byKey(SessionSettingsSheet.panelPinnedSwitchKey),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(SessionSettingsSheet.toastNotificationsSwitchKey),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(SessionSettingsSheet.maxToastCountSelectorKey),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(SessionSettingsSheet.maxToastCountOffKey),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(SessionSettingsSheet.toastLayoutSelectorKey),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(SessionSettingsSheet.toastLayoutStandardKey),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(SessionSettingsSheet.toastLayoutCompactKey),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(SessionSettingsSheet.quitAppButtonKey),
+        findsOneWidget,
+      );
 
-      await tester.tap(find.text('Compact'));
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(SessionSettingsSheet.layoutSelectorKey),
+          matching: find.text('Compact'),
+        ),
+      );
       await tester.pump();
       expect(changedLayout, ChatListLayout.compact);
+
+      await tester.tap(find.byKey(SessionSettingsSheet.panelPinnedSwitchKey));
+      await tester.pump();
+      expect(changedPinned, isFalse);
+
+      await tester.tap(
+        find.byKey(SessionSettingsSheet.maxToastCountOptionKey(5)),
+      );
+      await tester.pump();
+      expect(changedMaxToasts, 5);
+
+      // Tapping Off pill disables toast popups.
+      await tester.tap(find.byKey(SessionSettingsSheet.maxToastCountOffKey));
+      await tester.pump();
+      expect(changedToast, isFalse);
+
+      // Tapping count pill (2) while Off re-enables toast popups and selects 2!
+      await tester.tap(
+        find.byKey(SessionSettingsSheet.maxToastCountOptionKey(2)),
+      );
+      await tester.pump();
+      expect(changedToast, isTrue);
+      expect(changedMaxToasts, 2);
+
+      // Tapping Toast Layout pills switches between Compact and Standard.
+      await tester.tap(find.byKey(SessionSettingsSheet.toastLayoutCompactKey));
+      await tester.pump();
+      expect(changedToastLayout, ChatListLayout.compact);
+
+      await tester.tap(find.byKey(SessionSettingsSheet.toastLayoutStandardKey));
+      await tester.pump();
+      expect(changedToastLayout, ChatListLayout.standard);
+
+      // Tapping switch turns toast popups off again.
+      await tester.tap(
+        find.byKey(SessionSettingsSheet.toastNotificationsSwitchKey),
+      );
+      await tester.pump();
+      expect(changedToast, isFalse);
 
       await tester.tap(find.byKey(const Key('settings_reselect_channel_button')));
       await tester.pump();
@@ -757,6 +848,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(authRepo.clearBackendStateCalls, 1);
       expect(backendChangedCalls, 1);
+
+      await tester.tap(find.byKey(SessionSettingsSheet.quitAppButtonKey));
+      await tester.pump();
+      expect(quitAppCalls, 1);
     });
   });
 }

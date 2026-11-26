@@ -38,10 +38,12 @@ class FlutterWindow : public Win32Window {
   void ShowMainWindow();
   void ShowCollapsedOrb();
   std::string ExpandPanel(double width, double height);
+  std::string ShowToastOverlay(double width, double height);
   void StartOrbDrag();
   void StartPanelResize(WPARAM hit_test);
   void MoveOrb(double dx, double dy);
   void HideOrb();
+  void QuitApp();
   LRESULT HitTestResizeEdge(HWND hwnd, POINT screen_pt) const;
   bool IsPointInOrbDragRegion(HWND hwnd, POINT screen_pt) const;
   void SyncCollapsedOriginFromWindow(HWND hwnd);
@@ -65,6 +67,10 @@ class FlutterWindow : public Win32Window {
 
   bool is_overlay_mode_ = false;
   bool is_expanded_ = false;
+  bool is_toast_showing_ = false;
+  bool is_panel_pinned_ = true;
+  bool is_toast_notifications_enabled_ = true;
+  bool is_compact_toast_layout_ = false;
   bool expanded_above_ = false;
   bool is_native_dragging_ = false;
   bool did_move_while_expanded_ = false;

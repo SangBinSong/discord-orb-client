@@ -135,6 +135,9 @@ void FlutterWindow::ConfigureMainWindow(HWND hwnd) {
 }
 
 void FlutterWindow::ConfigureOverlayWindow(HWND hwnd) {
+  if (is_overlay_mode_) {
+    return;
+  }
   is_overlay_mode_ = true;
   LONG_PTR style = ::GetWindowLongPtr(hwnd, GWL_STYLE);
   style &= ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW);
@@ -201,6 +204,106 @@ void FlutterWindow::HandleWindowMethodCall(
     }
     std::string direction = ExpandPanel(*width, *height);
     result->Success(flutter::EncodableValue(direction));
+    return;
+  }
+  if (method == "showToastOverlay") {
+    const auto* args =
+        call.arguments()
+            ? std::get_if<flutter::EncodableMap>(call.arguments())
+            : nullptr;
+    if (!args) {
+      result->Error("invalid_arguments",
+                    "showToastOverlay requires a map with width and height");
+      return;
+    }
+    std::optional<double> width = TryGetDoubleArg(*args, "width");
+    std::optional<double> height = TryGetDoubleArg(*args, "height");
+    if (!width.has_value() || !height.has_value() || *width <= 0.0 ||
+        *height <= 0.0) {
+      result->Error(
+          "invalid_arguments",
+          "showToastOverlay requires positive numeric width and height");
+      return;
+    }
+    std::string direction = ShowToastOverlay(*width, *height);
+    result->Success(flutter::EncodableValue(direction));
+    return;
+  }
+  if (method == "updateToastStack" || method == "hideToastStack") {
+    result->Success();
+    return;
+  }
+  if (method == "setPanelPinned") {
+    const auto* args =
+        call.arguments()
+            ? std::get_if<flutter::EncodableMap>(call.arguments())
+            : nullptr;
+    if (!args) {
+      result->Error("invalid_arguments",
+                    "setPanelPinned requires a map with pinned");
+      return;
+    }
+    auto it = args->find(flutter::EncodableValue("pinned"));
+    const auto* pinned =
+        it != args->end() ? std::get_if<bool>(&it->second) : nullptr;
+    if (!pinned) {
+      result->Error("invalid_arguments",
+                    "setPanelPinned requires a boolean pinned argument");
+      return;
+    }
+    is_panel_pinned_ = *pinned;
+    result->Success();
+    return;
+  }
+  if (method == "setToastNotificationsEnabled") {
+    const auto* args =
+        call.arguments()
+            ? std::get_if<flutter::EncodableMap>(call.arguments())
+            : nullptr;
+    if (!args) {
+      result->Error(
+          "invalid_arguments",
+          "setToastNotificationsEnabled requires a map with enabled");
+      return;
+    }
+    auto it = args->find(flutter::EncodableValue("enabled"));
+    const auto* enabled =
+        it != args->end() ? std::get_if<bool>(&it->second) : nullptr;
+    if (!enabled) {
+      result->Error(
+          "invalid_arguments",
+          "setToastNotificationsEnabled requires a boolean enabled argument");
+      return;
+    }
+    is_toast_notifications_enabled_ = *enabled;
+    result->Success();
+    return;
+  }
+  if (method == "setToastLayout") {
+    const auto* args =
+        call.arguments()
+            ? std::get_if<flutter::EncodableMap>(call.arguments())
+            : nullptr;
+    if (!args) {
+      result->Error("invalid_arguments",
+                    "setToastLayout requires a map with compact");
+      return;
+    }
+    auto it = args->find(flutter::EncodableValue("compact"));
+    const auto* compact =
+        it != args->end() ? std::get_if<bool>(&it->second) : nullptr;
+    if (!compact) {
+      result->Error("invalid_arguments",
+                    "setToastLayout requires a boolean compact argument");
+      return;
+    }
+    is_compact_toast_layout_ = *compact;
+    result->Success();
+    return;
+  }
+  if (method == "quitApp") {
+    result->Success();
+    QuitApp();
     return;
   }
   if (method == "moveOrb") {
@@ -286,6 +389,7 @@ void FlutterWindow::ShowMainWindow() {
   }
 
   is_expanded_ = false;
+  is_toast_showing_ = false;
   ConfigureMainWindow(hwnd);
 
   HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -317,7 +421,8 @@ void FlutterWindow::ShowCollapsedOrb() {
     return;
   }
 
-  if (is_overlay_mode_ && is_expanded_ && did_move_while_expanded_) {
+  if (is_overlay_mode_ && (is_expanded_ || is_toast_showing_) &&
+      did_move_while_expanded_) {
     SyncCollapsedOriginFromWindow(hwnd);
   }
 
@@ -343,6 +448,7 @@ void FlutterWindow::ShowCollapsedOrb() {
   has_collapsed_origin_ = true;
   expanded_above_ = false;
   is_expanded_ = false;
+  is_toast_showing_ = false;
   did_move_while_expanded_ = false;
 
   ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
@@ -366,7 +472,9 @@ std::string FlutterWindow::ExpandPanel(double width, double height) {
       static_cast<int>(std::lround(kCollapsedOrbSizeLogical * scale));
   int margin = static_cast<int>(std::lround(kDefaultMarginLogical * scale));
 
-  if (!is_expanded_) {
+  if (is_toast_showing_ && did_move_while_expanded_) {
+    SyncCollapsedOriginFromWindow(hwnd);
+  } else if (!is_expanded_ && !is_toast_showing_) {
     RECT current_rect{};
     if (::GetWindowRect(hwnd, &current_rect) &&
         (current_rect.right - current_rect.left) == orb_size &&
@@ -413,6 +521,7 @@ std::string FlutterWindow::ExpandPanel(double width, double height) {
   RECT clamped = ClampRectToWorkArea(desired_x, desired_y, panel_width,
                                      panel_height, work_area);
 
+  is_toast_showing_ = false;
   is_expanded_ = true;
   did_move_while_expanded_ = false;
   ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
@@ -420,6 +529,76 @@ std::string FlutterWindow::ExpandPanel(double width, double height) {
                  SWP_SHOWWINDOW);
   ::SetForegroundWindow(hwnd);
   ::SetFocus(hwnd);
+  return expanded_above_ ? "above" : "below";
+}
+
+std::string FlutterWindow::ShowToastOverlay(double width, double height) {
+  HWND hwnd = GetHandle();
+  if (!hwnd) {
+    return "below";
+  }
+
+  ConfigureOverlayWindow(hwnd);
+
+  HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  double scale = GetScaleFactorForMonitor(monitor);
+  RECT work_area = GetMonitorWorkArea(hwnd);
+
+  int orb_size =
+      static_cast<int>(std::lround(kCollapsedOrbSizeLogical * scale));
+  int margin = static_cast<int>(std::lround(kDefaultMarginLogical * scale));
+
+  if (is_toast_showing_ && did_move_while_expanded_) {
+    SyncCollapsedOriginFromWindow(hwnd);
+  } else if (!is_expanded_ && !is_toast_showing_) {
+    RECT current_rect{};
+    if (::GetWindowRect(hwnd, &current_rect) &&
+        (current_rect.right - current_rect.left) == orb_size &&
+        (current_rect.bottom - current_rect.top) == orb_size) {
+      collapsed_origin_.x = current_rect.left;
+      collapsed_origin_.y = current_rect.top;
+      has_collapsed_origin_ = true;
+    } else if (!has_collapsed_origin_) {
+      collapsed_origin_.x = work_area.right - orb_size - margin;
+      collapsed_origin_.y = work_area.top + margin;
+      has_collapsed_origin_ = true;
+    }
+  }
+
+  double logical_width = (std::max)(width, kCollapsedOrbSizeLogical);
+  double logical_height = (std::max)(height, kCollapsedOrbSizeLogical);
+  int max_work_width = static_cast<int>(work_area.right - work_area.left);
+  int max_work_height = static_cast<int>(work_area.bottom - work_area.top);
+  int toast_width = (std::min)(
+      static_cast<int>(std::lround(logical_width * scale)), max_work_width);
+  int toast_height = (std::min)(
+      static_cast<int>(std::lround(logical_height * scale)), max_work_height);
+
+  int space_below = static_cast<int>(work_area.bottom) - collapsed_origin_.y;
+  int space_above =
+      (collapsed_origin_.y + orb_size) - static_cast<int>(work_area.top);
+  if (space_below >= toast_height) {
+    expanded_above_ = false;
+  } else if (space_above > space_below) {
+    expanded_above_ = true;
+  } else {
+    expanded_above_ = false;
+  }
+
+  int desired_x = collapsed_origin_.x + orb_size - toast_width;
+  int desired_y = expanded_above_
+                      ? (collapsed_origin_.y + orb_size - toast_height)
+                      : collapsed_origin_.y;
+
+  RECT clamped = ClampRectToWorkArea(desired_x, desired_y, toast_width,
+                                     toast_height, work_area);
+
+  is_expanded_ = false;
+  is_toast_showing_ = true;
+  did_move_while_expanded_ = false;
+  ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
+                 clamped.right - clamped.left, clamped.bottom - clamped.top,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
   return expanded_above_ ? "above" : "below";
 }
 
@@ -446,7 +625,7 @@ void FlutterWindow::StartOrbDrag() {
                      clamped.right - clamped.left, clamped.bottom - clamped.top,
                      SWP_NOACTIVATE);
     }
-    if (is_expanded_) {
+    if (is_expanded_ || is_toast_showing_) {
       did_move_while_expanded_ = true;
     }
     SyncCollapsedOriginFromWindow(hwnd);
@@ -517,7 +696,7 @@ void FlutterWindow::MoveOrb(double dx, double dy) {
   ::SetWindowPos(hwnd, HWND_TOPMOST, clamped.left, clamped.top,
                  clamped.right - clamped.left, clamped.bottom - clamped.top,
                  SWP_NOACTIVATE);
-  if (is_expanded_) {
+  if (is_expanded_ || is_toast_showing_) {
     did_move_while_expanded_ = true;
   }
   SyncCollapsedOriginFromWindow(hwnd);
@@ -560,7 +739,7 @@ bool FlutterWindow::IsPointInOrbDragRegion(HWND hwnd, POINT screen_pt) const {
   if (!::GetWindowRect(hwnd, &rect)) {
     return false;
   }
-  if (!is_expanded_) {
+  if (!is_expanded_ && !is_toast_showing_) {
     return screen_pt.x >= rect.left && screen_pt.x <= rect.right &&
            screen_pt.y >= rect.top && screen_pt.y <= rect.bottom;
   }
@@ -591,8 +770,10 @@ void FlutterWindow::SyncCollapsedOriginFromWindow(HWND hwnd) {
   int orb_size =
       static_cast<int>(std::lround(kCollapsedOrbSizeLogical * scale));
 
-  int raw_x = is_expanded_ ? (current_rect.right - orb_size) : current_rect.left;
-  int raw_y = (is_expanded_ && expanded_above_)
+  bool is_large_overlay = is_expanded_ || is_toast_showing_;
+  int raw_x = is_large_overlay ? (current_rect.right - orb_size)
+                               : current_rect.left;
+  int raw_y = (is_large_overlay && expanded_above_)
                   ? (current_rect.bottom - orb_size)
                   : current_rect.top;
   RECT clamped_orb =
@@ -605,9 +786,21 @@ void FlutterWindow::SyncCollapsedOriginFromWindow(HWND hwnd) {
 void FlutterWindow::HideOrb() {
   HWND hwnd = GetHandle();
   is_expanded_ = false;
+  is_toast_showing_ = false;
   if (hwnd) {
     ::ShowWindow(hwnd, SW_HIDE);
   }
+}
+
+void FlutterWindow::QuitApp() {
+  HWND hwnd = GetHandle();
+  is_expanded_ = false;
+  is_toast_showing_ = false;
+  if (hwnd) {
+    ::ShowWindow(hwnd, SW_HIDE);
+    ::DestroyWindow(hwnd);
+  }
+  ::PostQuitMessage(0);
 }
 
 void FlutterWindow::UnregisterSessionNotification() {
@@ -718,6 +911,8 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         }
       }
       did_move_while_expanded_ = true;
+    } else if (is_toast_showing_) {
+      did_move_while_expanded_ = true;
     }
     SyncCollapsedOriginFromWindow(hwnd);
   }
@@ -729,7 +924,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE) {
-    if (is_expanded_) {
+    if (is_expanded_ && is_overlay_mode_ && !is_panel_pinned_) {
       NotifyPanelDismissRequested();
     }
     return 0;

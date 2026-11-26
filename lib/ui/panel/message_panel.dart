@@ -18,6 +18,10 @@ class MessagePanel extends StatelessWidget {
     this.guildIconUrl,
     this.layout = ChatListLayout.standard,
     this.onLayoutChanged,
+    this.isPinned = true,
+    this.onPinnedChanged,
+    this.toastNotificationsEnabled = true,
+    this.onToastNotificationsChanged,
     this.error,
     this.onClose,
     this.onRetry,
@@ -27,6 +31,9 @@ class MessagePanel extends StatelessWidget {
 
   static const int maxVisibleMessages = 10;
   static const Key closeButtonKey = Key('message_panel_close_button');
+  static const Key pinToggleButtonKey = Key('message_panel_pin_toggle_button');
+  static const Key toastToggleButtonKey =
+      Key('message_panel_toast_toggle_button');
   static const Key layoutToggleButtonKey =
       Key('message_panel_layout_toggle_button');
   static const Key messageListKey = Key('message_panel_list');
@@ -38,6 +45,10 @@ class MessagePanel extends StatelessWidget {
   final String? guildIconUrl;
   final ChatListLayout layout;
   final ValueChanged<ChatListLayout>? onLayoutChanged;
+  final bool isPinned;
+  final ValueChanged<bool>? onPinnedChanged;
+  final bool toastNotificationsEnabled;
+  final ValueChanged<bool>? onToastNotificationsChanged;
   final OrbException? error;
   final VoidCallback? onClose;
   final VoidCallback? onRetry;
@@ -97,6 +108,10 @@ class MessagePanel extends StatelessWidget {
             guildIconUrl: guildIconUrl,
             layout: layout,
             onLayoutChanged: onLayoutChanged,
+            isPinned: isPinned,
+            onPinnedChanged: onPinnedChanged,
+            toastNotificationsEnabled: toastNotificationsEnabled,
+            onToastNotificationsChanged: onToastNotificationsChanged,
             onClose: onClose,
           ),
           Divider(
@@ -146,6 +161,10 @@ class _PanelHeader extends StatelessWidget {
     this.guildIconUrl,
     required this.layout,
     this.onLayoutChanged,
+    required this.isPinned,
+    this.onPinnedChanged,
+    required this.toastNotificationsEnabled,
+    this.onToastNotificationsChanged,
     this.onClose,
   });
 
@@ -154,6 +173,10 @@ class _PanelHeader extends StatelessWidget {
   final String? guildIconUrl;
   final ChatListLayout layout;
   final ValueChanged<ChatListLayout>? onLayoutChanged;
+  final bool isPinned;
+  final ValueChanged<bool>? onPinnedChanged;
+  final bool toastNotificationsEnabled;
+  final ValueChanged<bool>? onToastNotificationsChanged;
   final VoidCallback? onClose;
 
   @override
@@ -208,6 +231,43 @@ class _PanelHeader extends StatelessWidget {
               ],
             ),
           ),
+          if (onPinnedChanged != null)
+            Semantics(
+              toggled: isPinned,
+              child: IconButton(
+                key: MessagePanel.pinToggleButtonKey,
+                tooltip: isPinned
+                    ? 'Unpin panel (auto-close on focus loss)'
+                    : 'Pin panel open',
+                icon: Icon(
+                  isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  size: 18,
+                  color: isPinned ? colorScheme.primary : null,
+                ),
+                visualDensity: VisualDensity.compact,
+                onPressed: () => onPinnedChanged!(!isPinned),
+              ),
+            ),
+          if (onToastNotificationsChanged != null)
+            Semantics(
+              toggled: toastNotificationsEnabled,
+              child: IconButton(
+                key: MessagePanel.toastToggleButtonKey,
+                tooltip: toastNotificationsEnabled
+                    ? 'Turn off toast popups'
+                    : 'Turn on toast popups',
+                icon: Icon(
+                  toastNotificationsEnabled
+                      ? Icons.notifications_active_outlined
+                      : Icons.notifications_off_outlined,
+                  size: 18,
+                  color: toastNotificationsEnabled ? colorScheme.primary : null,
+                ),
+                visualDensity: VisualDensity.compact,
+                onPressed: () =>
+                    onToastNotificationsChanged!(!toastNotificationsEnabled),
+              ),
+            ),
           if (onLayoutChanged != null)
             IconButton(
               key: MessagePanel.layoutToggleButtonKey,

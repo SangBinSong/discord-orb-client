@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:discord_orb/app.dart';
 import 'package:discord_orb/contracts/orb_window_controller.dart';
+import 'package:discord_orb/models/message_models.dart';
 import 'package:discord_orb/platform/android_orb_window_controller.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -33,6 +34,7 @@ void main() {
         case 'expandPanel':
         case 'collapsePanel':
         case 'hideOrb':
+        case 'quitApp':
           return null;
         default:
           throw MissingPluginException('Unexpected method: ${call.method}');
@@ -63,6 +65,7 @@ void main() {
       addTearDown(controller.dispose);
 
       expect(controller.usesNativeWindowDrag, isFalse);
+      expect(controller.usesNativeToastOverlay, isFalse);
       mockOverlayPermission = true;
       expect(await controller.hasOverlayPermission(), isTrue);
 
@@ -75,8 +78,30 @@ void main() {
       await controller.openOverlayPermissionSettings();
       await controller.showCollapsedOrb();
       await controller.expandPanel(const Size(340, 460));
+      expect(
+        await controller.showToastOverlay(const Size(300, 168)),
+        OrbPanelExpandDirection.below,
+      );
+      await controller.updateToastStack(
+        messages: const <ChannelMessagePreview>[],
+        maxVisibleCount: 3,
+      );
+      await controller.hideToastStack();
       await controller.collapsePanel();
       await controller.hideOrb();
+      await controller.setPanelPinned(false);
+      expect(controller.isPanelPinned, isFalse);
+      await controller.setPanelPinned(true);
+      expect(controller.isPanelPinned, isTrue);
+      await controller.setToastNotificationsEnabled(false);
+      expect(controller.isToastNotificationsEnabled, isFalse);
+      await controller.setToastNotificationsEnabled(true);
+      expect(controller.isToastNotificationsEnabled, isTrue);
+      await controller.setToastLayout(ChatListLayout.compact);
+      expect(controller.toastLayout, ChatListLayout.compact);
+      await controller.setToastLayout(ChatListLayout.standard);
+      expect(controller.toastLayout, ChatListLayout.standard);
+      await controller.quitApp();
       await controller.startOrbDrag();
       await controller.startPanelResize(PanelResizeEdge.bottomRight);
       await controller.moveOrbBy(const Offset(10, 20));
@@ -93,6 +118,7 @@ void main() {
           'expandPanel',
           'collapsePanel',
           'hideOrb',
+          'quitApp',
         ],
       );
       expect(

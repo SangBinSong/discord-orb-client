@@ -351,6 +351,78 @@ void main() {
       expect(uuidV4Pattern.hasMatch(second), isTrue);
       expect(first, isNot(second));
     });
+
+    test('persists panelPinned and toastNotificationsEnabled with true defaults',
+        () async {
+      final kvStore = InMemorySecureKeyValueStore();
+      final store = DeviceIdentityStore(store: kvStore);
+
+      expect(await store.readPanelPinned(), isTrue);
+      expect(await store.readToastNotificationsEnabled(), isTrue);
+
+      await store.savePanelPinned(false);
+      await store.saveToastNotificationsEnabled(false);
+      expect(await store.readPanelPinned(), isFalse);
+      expect(await store.readToastNotificationsEnabled(), isFalse);
+      expect(await kvStore.read(DeviceIdentityStore.panelPinnedKey), 'false');
+      expect(
+        await kvStore.read(DeviceIdentityStore.toastNotificationsEnabledKey),
+        'false',
+      );
+
+      await store.savePanelPinned(true);
+      await store.saveToastNotificationsEnabled(true);
+      expect(await store.readPanelPinned(), isTrue);
+      expect(await store.readToastNotificationsEnabled(), isTrue);
+    });
+
+    test('persists and clamps maxVisibleToastCount within 1..5 defaulting to 3',
+        () async {
+      final kvStore = InMemorySecureKeyValueStore();
+      final store = DeviceIdentityStore(store: kvStore);
+
+      expect(await store.readMaxVisibleToastCount(), 3);
+
+      await store.saveMaxVisibleToastCount(5);
+      expect(await store.readMaxVisibleToastCount(), 5);
+      expect(
+        await kvStore.read(DeviceIdentityStore.maxVisibleToastCountKey),
+        '5',
+      );
+
+      await store.saveMaxVisibleToastCount(0);
+      expect(await store.readMaxVisibleToastCount(), 1);
+
+      await store.saveMaxVisibleToastCount(99);
+      expect(await store.readMaxVisibleToastCount(), 5);
+
+      await kvStore.write(DeviceIdentityStore.maxVisibleToastCountKey, 'bad');
+      expect(await store.readMaxVisibleToastCount(), 3);
+    });
+
+    test('persists toastLayout defaulting to standard', () async {
+      final kvStore = InMemorySecureKeyValueStore();
+      final store = DeviceIdentityStore(store: kvStore);
+
+      expect(await store.readToastLayout(), ChatListLayout.standard);
+
+      await store.saveToastLayout(ChatListLayout.compact);
+      expect(await store.readToastLayout(), ChatListLayout.compact);
+      expect(
+        await kvStore.read(DeviceIdentityStore.toastLayoutKey),
+        'compact',
+      );
+
+      await store.saveToastLayout(ChatListLayout.standard);
+      expect(await store.readToastLayout(), ChatListLayout.standard);
+      expect(
+        await kvStore.read(DeviceIdentityStore.toastLayoutKey),
+        'standard',
+      );
+
+      await kvStore.write(DeviceIdentityStore.toastLayoutKey, 'invalid');
+      expect(await store.readToastLayout(), ChatListLayout.standard);
+    });
   });
 
   group('PkcePair', () {

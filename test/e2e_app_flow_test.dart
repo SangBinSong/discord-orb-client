@@ -121,6 +121,12 @@ class _TrackingWindowController extends NoopOrbWindowController {
   }
 }
 
+Future<void> _pumpSettled(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await tester.pump(const Duration(milliseconds: 100));
+}
+
 void main() {
   testWidgets(
     'full desktop E2E flow: setup -> login -> channel -> orb open/close -> lock clear -> access loss -> backend change',
@@ -288,7 +294,7 @@ void main() {
           windowController: windowController,
         ),
       );
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       // 1. Setup screen: enter HTTPS backend URL and continue.
       expect(find.text('Discord Orb Setup'), findsOneWidget);
@@ -298,12 +304,12 @@ void main() {
       );
       await tester.pump();
       await tester.tap(find.byKey(const Key('backend_connect_button')));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       // 2. Sign-in screen: perform Discord OAuth PKCE login.
       expect(find.text('Sign in with Discord'), findsWidgets);
       await tester.tap(find.byKey(const Key('sign_in_start_button')));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(browserLauncher.launchedUris, hasLength(1));
       expect(
         browserLauncher.launchedUris.first.path,
@@ -315,42 +321,42 @@ void main() {
       expect(find.text('#general'), findsOneWidget);
       expect(find.text('#updates'), findsOneWidget);
       await tester.tap(find.byKey(const Key('channel_tile_ch-1')));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       expect(windowController.showCollapsedOrbCalls, 1);
       expect(find.byKey(OrbButton.orbButtonKey), findsOneWidget);
 
       // 4. Open orb -> load messages -> close orb.
       await tester.tap(find.byKey(OrbButton.orbButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(windowController.expandPanelCalls, 1);
       expect(find.text('Newest message in #general'), findsOneWidget);
       expect(find.text('Hello from #general'), findsOneWidget);
 
       await tester.tap(find.byKey(OrbButton.orbButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(windowController.collapsePanelCalls, 1);
       expect(find.text('Newest message in #general'), findsNothing);
 
       // 5. Re-open orb, then trigger lock/sleep -> panel auto-closes and clears messages.
       await tester.tap(find.byKey(OrbButton.orbButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(find.text('Newest message in #general'), findsOneWidget);
 
       windowController.emitLockOrSleep();
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(windowController.collapsePanelCalls, 2);
       expect(find.text('Newest message in #general'), findsNothing);
 
       // 6. Permission revoked -> opening orb prompts reselection -> pick #updates.
       revokeCh1Access = true;
       await tester.tap(find.byKey(OrbButton.orbButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(find.text('Channel access denied'), findsOneWidget);
       expect(find.text('Newest message in #general'), findsNothing);
 
       await tester.tap(find.byKey(PanelStatusView.reselectChannelButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(find.text('Select Channel'), findsOneWidget);
       expect(windowController.showMainWindowCalls, greaterThanOrEqualTo(2));
       expect(windowController.hideOrbCalls, 0);
@@ -358,18 +364,18 @@ void main() {
       expect(find.text('#updates'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('channel_tile_ch-2')));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       await tester.tap(find.byKey(OrbButton.orbButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(find.text('Update channel message'), findsOneWidget);
 
       // 7. Change backend URL via SessionSettingsSheet -> clears local tokens & channel.
       await tester.tap(find.byKey(DiscordOrbApp.openSettingsButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(find.text('Session Settings'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('settings_change_backend_button')));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       expect(find.text('Discord Orb Setup'), findsOneWidget);
       expect(find.text('Update channel message'), findsNothing);
@@ -390,7 +396,7 @@ void main() {
       );
       await tester.pump();
       await tester.tap(find.byKey(const Key('backend_connect_button')));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       expect(find.text('Sign in with Discord'), findsWidgets);
       expect(find.text('Backend: https://orb2.example.com'), findsOneWidget);
@@ -475,7 +481,7 @@ void main() {
           windowController: windowController,
         ),
       );
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       await tester.enterText(
         find.byKey(const Key('backend_url_field')),
@@ -483,7 +489,7 @@ void main() {
       );
       await tester.pump();
       await tester.tap(find.byKey(const Key('backend_connect_button')));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       await tester.tap(find.byKey(const Key('sign_in_start_button')));
       await tester.pump();
@@ -491,7 +497,7 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 10)),
       );
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       expect(find.text('No Eligible Channels'), findsOneWidget);
     },
@@ -555,7 +561,7 @@ void main() {
           windowController: windowController,
         ),
       );
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       expect(find.byKey(OrbButton.orbButtonKey), findsOneWidget);
       expect(find.byKey(DiscordOrbApp.changeChannelButtonKey), findsNothing);
@@ -572,34 +578,111 @@ void main() {
 
       // Expand viewport to desktop panel window size -> bottom controls appear.
       tester.view.physicalSize = const Size(352, 576);
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
 
       expect(find.byKey(DiscordOrbApp.changeChannelButtonKey), findsOneWidget);
       expect(find.byKey(DiscordOrbApp.openSettingsButtonKey), findsOneWidget);
 
-      // Open panel and toggle compact layout in header -> persists and syncs with settings sheet.
+      // Open panel and toggle compact layout + pin in header -> persists and syncs with settings sheet.
       await tester.tap(find.byKey(OrbButton.orbButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       await tester.tap(find.byKey(MessagePanel.layoutToggleButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       expect(
         await secureStore.read(DeviceIdentityStore.chatListLayoutKey),
         'compact',
       );
 
+      await tester.tap(find.byKey(MessagePanel.pinToggleButtonKey));
+      await _pumpSettled(tester);
+      expect(
+        await secureStore.read(DeviceIdentityStore.panelPinnedKey),
+        'false',
+      );
+      expect(windowController.isPanelPinned, isFalse);
+
       await tester.tap(find.byKey(DiscordOrbApp.openSettingsButtonKey));
-      await tester.pumpAndSettle();
+      await _pumpSettled(tester);
       final selector = tester.widget<SegmentedButton<ChatListLayout>>(
         find.byKey(SessionSettingsSheet.layoutSelectorKey),
       );
       expect(selector.selected, <ChatListLayout>{ChatListLayout.compact});
+      final pinSwitch = tester.widget<SwitchListTile>(
+        find.byKey(SessionSettingsSheet.panelPinnedSwitchKey),
+      );
+      expect(pinSwitch.value, isFalse);
+      final toastSwitch = tester.widget<SwitchListTile>(
+        find.byKey(SessionSettingsSheet.toastNotificationsSwitchKey),
+      );
+      expect(toastSwitch.value, isTrue);
 
-      await tester.tap(find.text('Standard'));
-      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(SessionSettingsSheet.layoutSelectorKey),
+          matching: find.text('Standard'),
+        ),
+      );
+      await _pumpSettled(tester);
       expect(
         await secureStore.read(DeviceIdentityStore.chatListLayoutKey),
         'standard',
       );
+
+      await tester.tap(find.byKey(SessionSettingsSheet.panelPinnedSwitchKey));
+      await _pumpSettled(tester);
+      expect(
+        await secureStore.read(DeviceIdentityStore.panelPinnedKey),
+        'true',
+      );
+      expect(windowController.isPanelPinned, isTrue);
+
+      await tester.ensureVisible(
+        find.byKey(SessionSettingsSheet.maxToastCountOptionKey(4)),
+      );
+      await tester.tap(
+        find.byKey(SessionSettingsSheet.maxToastCountOptionKey(4)),
+      );
+      await _pumpSettled(tester);
+      expect(
+        await secureStore.read(DeviceIdentityStore.maxVisibleToastCountKey),
+        '4',
+      );
+
+      await tester.ensureVisible(
+        find.byKey(SessionSettingsSheet.toastLayoutCompactKey),
+      );
+      await tester.tap(
+        find.byKey(SessionSettingsSheet.toastLayoutCompactKey),
+      );
+      await _pumpSettled(tester);
+      expect(
+        await secureStore.read(DeviceIdentityStore.toastLayoutKey),
+        'compact',
+      );
+      expect(windowController.toastLayout, ChatListLayout.compact);
+
+      await tester.ensureVisible(
+        find.byKey(SessionSettingsSheet.maxToastCountOffKey),
+      );
+      await tester.tap(
+        find.byKey(SessionSettingsSheet.maxToastCountOffKey),
+      );
+      await _pumpSettled(tester);
+      expect(
+        await secureStore.read(DeviceIdentityStore.toastNotificationsEnabledKey),
+        'false',
+      );
+      expect(windowController.isToastNotificationsEnabled, isFalse);
+
+      await tester.ensureVisible(
+        find.byKey(SessionSettingsSheet.quitAppButtonKey),
+      );
+      await tester.tap(
+        find.byKey(SessionSettingsSheet.quitAppButtonKey),
+      );
+      await _pumpSettled(tester);
+      expect(windowController.quitRequested, isTrue);
+      expect(windowController.quitCallCount, 1);
     },
   );
 }

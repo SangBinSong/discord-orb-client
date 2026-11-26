@@ -143,6 +143,10 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
   _AppStage _stage = _AppStage.loading;
   EligibleChannel? _selectedChannel;
   ChatListLayout _chatListLayout = ChatListLayout.standard;
+  bool _panelPinned = true;
+  bool _toastNotificationsEnabled = true;
+  int _maxVisibleToastCount = DeviceIdentityStore.defaultMaxVisibleToastCount;
+  ChatListLayout _toastLayout = ChatListLayout.standard;
   OrbPanelExpandDirection _panelExpandDirection = OrbPanelExpandDirection.below;
 
   @override
@@ -224,10 +228,22 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
 
   Future<void> _bootstrap() async {
     final storedLayout = await _identityStore.readChatListLayout();
+    final storedPanelPinned = await _identityStore.readPanelPinned();
+    final storedToastEnabled =
+        await _identityStore.readToastNotificationsEnabled();
+    final storedMaxToasts = await _identityStore.readMaxVisibleToastCount();
+    final storedToastLayout = await _identityStore.readToastLayout();
     final storedTokens = await _authRepository.loadStoredSession();
     final backendUrl = _authRepository.backendBaseUrl;
     if (!mounted) return;
     _chatListLayout = storedLayout;
+    _panelPinned = storedPanelPinned;
+    _toastNotificationsEnabled = storedToastEnabled;
+    _maxVisibleToastCount = storedMaxToasts;
+    _toastLayout = storedToastLayout;
+    await _setPanelPinnedSafely(_panelPinned);
+    await _setToastNotificationsEnabledSafely(_toastNotificationsEnabled);
+    await _setToastLayoutSafely(_toastLayout);
 
     if (backendUrl == null) {
       setState(() {
@@ -300,6 +316,45 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
   Future<void> _showMainWindowSafely() async {
     try {
       await _windowController.showMainWindow();
+    } catch (_) {
+      // Ignore missing host plugin in widget tests.
+    }
+  }
+
+  Future<void> _setPanelPinnedSafely(bool pinned) async {
+    try {
+      await _windowController.setPanelPinned(pinned);
+    } catch (_) {
+      // Ignore missing host plugin in widget tests.
+    }
+  }
+
+  Future<void> _setToastNotificationsEnabledSafely(bool enabled) async {
+    try {
+      await _windowController.setToastNotificationsEnabled(enabled);
+    } catch (_) {
+      // Ignore missing host plugin in widget tests.
+    }
+  }
+
+  Future<void> _setToastLayoutSafely(ChatListLayout layout) async {
+    try {
+      await _windowController.setToastLayout(layout);
+    } catch (_) {
+      // Ignore missing host plugin in widget tests.
+    }
+  }
+
+  Future<void> _handleQuitApp() async {
+    _orbShellController.closeAndClear();
+    _previewRepository.clearMemory();
+    try {
+      await _windowController.hideToastStack();
+    } catch (_) {
+      // Ignore missing host plugin in widget tests.
+    }
+    try {
+      await _windowController.quitApp();
     } catch (_) {
       // Ignore missing host plugin in widget tests.
     }
@@ -400,6 +455,46 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
     unawaited(_identityStore.saveChatListLayout(next));
   }
 
+  void _handlePanelPinnedChanged(bool next) {
+    if (_panelPinned != next) {
+      setState(() {
+        _panelPinned = next;
+      });
+    }
+    unawaited(_setPanelPinnedSafely(next));
+    unawaited(_identityStore.savePanelPinned(next));
+  }
+
+  void _handleToastNotificationsChanged(bool next) {
+    if (_toastNotificationsEnabled != next) {
+      setState(() {
+        _toastNotificationsEnabled = next;
+      });
+    }
+    unawaited(_setToastNotificationsEnabledSafely(next));
+    unawaited(_identityStore.saveToastNotificationsEnabled(next));
+  }
+
+  void _handleMaxVisibleToastCountChanged(int next) {
+    final clamped = DeviceIdentityStore.clampMaxVisibleToastCount(next);
+    if (_maxVisibleToastCount != clamped) {
+      setState(() {
+        _maxVisibleToastCount = clamped;
+      });
+    }
+    unawaited(_identityStore.saveMaxVisibleToastCount(clamped));
+  }
+
+  void _handleToastLayoutChanged(ChatListLayout next) {
+    if (_toastLayout != next) {
+      setState(() {
+        _toastLayout = next;
+      });
+    }
+    unawaited(_setToastLayoutSafely(next));
+    unawaited(_identityStore.saveToastLayout(next));
+  }
+
   void _handleExpandDirectionChanged(OrbPanelExpandDirection direction) {
     if (_panelExpandDirection != direction) {
       setState(() {
@@ -418,6 +513,14 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
           selectedChannel: _selectedChannel,
           chatListLayout: _chatListLayout,
           onChatListLayoutChanged: _handleChatListLayoutChanged,
+          isPanelPinned: _panelPinned,
+          onPanelPinnedChanged: _handlePanelPinnedChanged,
+          toastNotificationsEnabled: _toastNotificationsEnabled,
+          onToastNotificationsChanged: _handleToastNotificationsChanged,
+          maxVisibleToastCount: _maxVisibleToastCount,
+          onMaxVisibleToastCountChanged: _handleMaxVisibleToastCountChanged,
+          toastLayout: _toastLayout,
+          onToastLayoutChanged: _handleToastLayoutChanged,
           onReselectChannel: () {
             Navigator.of(modalContext).pop();
             unawaited(_handleReselectChannel());
@@ -429,6 +532,10 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
           onBackendChanged: () {
             Navigator.of(modalContext).pop();
             unawaited(_handleBackendChangedFromSettings());
+          },
+          onQuitApp: () {
+            Navigator.of(modalContext).pop();
+            unawaited(_handleQuitApp());
           },
         );
       },
@@ -575,6 +682,17 @@ class _DiscordOrbAppState extends State<DiscordOrbApp> {
                             chatListLayout: _chatListLayout,
                             onChatListLayoutChanged:
                                 _handleChatListLayoutChanged,
+                            panelPinned: _panelPinned,
+                            onPanelPinnedChanged: _handlePanelPinnedChanged,
+                            toastNotificationsEnabled:
+                                _toastNotificationsEnabled,
+                            onToastNotificationsChanged:
+                                _handleToastNotificationsChanged,
+                            maxVisibleToastCount: _maxVisibleToastCount,
+                            onMaxVisibleToastCountChanged:
+                                _handleMaxVisibleToastCountChanged,
+                            toastLayout: _toastLayout,
+                            onToastLayoutChanged: _handleToastLayoutChanged,
                             onExpandDirectionChanged:
                                 _handleExpandDirectionChanged,
                             onReauthenticate: () =>

@@ -24,6 +24,22 @@ class DeviceIdentityStore {
   static const String selectedChannelKey = 'orb.selected_channel';
   static const String legacySelectedChannelKey = 'selected_channel';
   static const String chatListLayoutKey = 'orb.chat_list_layout';
+  static const String panelPinnedKey = 'orb.panel_pinned';
+  static const String toastNotificationsEnabledKey =
+      'orb.toast_notifications_enabled';
+  static const String maxVisibleToastCountKey = 'orb.max_visible_toast_count';
+  static const String toastLayoutKey = 'orb.toast_layout';
+
+  static const int minVisibleToastCount = 1;
+  static const int maxVisibleToastCount = 5;
+  static const int defaultMaxVisibleToastCount = 3;
+
+  /// Clamps a toast popup stack limit to the supported range `[1, 5]`.
+  static int clampMaxVisibleToastCount(int count) {
+    if (count < minVisibleToastCount) return minVisibleToastCount;
+    if (count > maxVisibleToastCount) return maxVisibleToastCount;
+    return count;
+  }
 
   final SecureKeyValueStore _store;
   final OrbPlatform _defaultPlatform;
@@ -269,6 +285,77 @@ class DeviceIdentityStore {
   /// Persists the user's preferred [ChatListLayout].
   Future<void> saveChatListLayout(ChatListLayout layout) async {
     await _store.write(chatListLayoutKey, layout.storageValue);
+  }
+
+  /// Reads whether the expanded panel stays pinned open when focus moves to
+  /// another window. Defaults to `true`.
+  Future<bool> readPanelPinned() async {
+    final raw = await _store.read(panelPinnedKey);
+    return _parseBoolPreference(raw, defaultValue: true);
+  }
+
+  /// Persists whether the expanded panel stays pinned open on focus loss.
+  Future<void> savePanelPinned(bool pinned) async {
+    await _store.write(panelPinnedKey, pinned ? 'true' : 'false');
+  }
+
+  /// Reads whether collapsed-orb real-time toast notifications are enabled.
+  /// Defaults to `true`.
+  Future<bool> readToastNotificationsEnabled() async {
+    final raw = await _store.read(toastNotificationsEnabledKey);
+    return _parseBoolPreference(raw, defaultValue: true);
+  }
+
+  /// Persists whether collapsed-orb real-time toast notifications are enabled.
+  Future<void> saveToastNotificationsEnabled(bool enabled) async {
+    await _store.write(
+      toastNotificationsEnabledKey,
+      enabled ? 'true' : 'false',
+    );
+  }
+
+  /// Reads the maximum number of simultaneously visible toast popup cards
+  /// (`1..5`, defaulting to `3`).
+  Future<int> readMaxVisibleToastCount() async {
+    final raw = await _store.read(maxVisibleToastCountKey);
+    if (raw == null || raw.trim().isEmpty) {
+      return defaultMaxVisibleToastCount;
+    }
+    final parsed = int.tryParse(raw.trim());
+    if (parsed == null) {
+      return defaultMaxVisibleToastCount;
+    }
+    return clampMaxVisibleToastCount(parsed);
+  }
+
+  /// Persists the maximum number of simultaneously visible toast popup cards,
+  /// clamped to `[1, 5]`.
+  Future<void> saveMaxVisibleToastCount(int count) async {
+    final clamped = clampMaxVisibleToastCount(count);
+    await _store.write(maxVisibleToastCountKey, clamped.toString());
+  }
+
+  /// Reads the persisted toast popup density preference (`standard` or
+  /// `compact`), defaulting to [ChatListLayout.standard].
+  Future<ChatListLayout> readToastLayout() async {
+    final raw = await _store.read(toastLayoutKey);
+    return ChatListLayout.fromStorageValue(raw);
+  }
+
+  /// Persists the user's preferred toast popup density layout.
+  Future<void> saveToastLayout(ChatListLayout layout) async {
+    await _store.write(toastLayoutKey, layout.storageValue);
+  }
+
+  static bool _parseBoolPreference(
+    String? raw, {
+    required bool defaultValue,
+  }) {
+    return switch (raw?.trim().toLowerCase()) {
+      'true' => true,
+      'false' => false,
+      _ => defaultValue,
+    };
   }
 
   /// Deletes all selected channel keys from storage and memory.
